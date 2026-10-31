@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from typing import TextIO
 
 from chessbot import __version__
@@ -125,12 +126,13 @@ class UciEngine:
             self.wait_ready()
             self.set_position(args)
         elif cmd == "go":
+            received = time.perf_counter()
             self.stop_search()
             self.wait_ready()
             if args[:1] == ["perft"]:
                 self.perft(int(args[1]) if len(args) > 1 else 1)
             else:
-                self.go(parse_go(args))
+                self.go(parse_go(args), received)
         elif cmd == "stop":
             self.stop_search()
         elif cmd == "quit":
@@ -180,7 +182,7 @@ class UciEngine:
             self.send(f"{move}: {count}")
         self.send(f"\nNodes searched: {sum(divide.values())}")
 
-    def go(self, limits: Limits) -> None:
+    def go(self, limits: Limits, received: float | None = None) -> None:
         assert self.board is not None
         assert self.searcher is not None
         self._stop.clear()
@@ -188,7 +190,7 @@ class UciEngine:
         board, searcher = self.board, self.searcher
 
         def think() -> None:
-            result = searcher.search(board, limits, self._on_info, self._stop)
+            result = searcher.search(board, limits, self._on_info, self._stop, received)
             if limits.infinite:
                 self._stop.wait()
             self._send_bestmove(result)

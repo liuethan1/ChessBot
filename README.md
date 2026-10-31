@@ -34,7 +34,7 @@ moves. Repetitions, the 50-move rule, and bare-minor endings score as draws.
 
 Time management: with a clock, the target is `remaining / 30 + 0.75 * increment` (fewer moves if
 `movestogo` is smaller); no new iteration starts after 55% of the target, and the search is cut
-off mid-iteration at `min(4 * target, remaining / 2 + increment / 2)`. `Move Overhead` is
+off mid-iteration at `min(4 * target, 0.3 * remaining + increment / 2)`. `Move Overhead` is
 subtracted from the remaining time first.
 
 ## Engine core and numba compile time

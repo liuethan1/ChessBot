@@ -68,7 +68,9 @@ def plan_time(limits: Limits, white_to_move: bool, overhead_ms: int) -> TimeBudg
     usable = max(1.0, remaining - overhead_ms)
     moves_to_go = min(limits.movestogo or DEFAULT_MOVES_TO_GO, DEFAULT_MOVES_TO_GO)
     soft = usable / moves_to_go + 0.75 * inc
-    hard = min(soft * 4, usable * 0.5 + inc * 0.5)
+    # With 30% of the remaining time as the cap, a long game at 10+0.1 settles at a clock of
+    # about 200 ms instead of draining towards the overhead.
+    hard = min(soft * 4, usable * 0.3 + inc * 0.5)
     soft = min(soft, hard)
     return TimeBudget(max(1.0, soft), max(1.0, hard))
 
@@ -118,8 +120,12 @@ class Searcher:
         limits: Limits,
         on_info: InfoCallback | None = None,
         stop: threading.Event | None = None,
+        start: float | None = None,
     ) -> SearchResult:
-        start = time.perf_counter()
+        """Search ``board`` within ``limits``; ``start`` is when the clock started (``go``
+        arrived), as a ``time.perf_counter()`` value, and defaults to now."""
+        if start is None:
+            start = time.perf_counter()
         budget = plan_time(limits, board.white_to_move, self.overhead_ms)
         timed = budget.hard_ms is not None
         max_depth = min(limits.depth or MAX_DEPTH, MAX_DEPTH)
