@@ -30,6 +30,8 @@ from chessbot.core.position import (
     PROMO,
     ST_HALFMOVE,
     ST_PLY,
+    ST_SIDE,
+    U_MOVE,
     Position,
     make_move,
     unmake_move,
@@ -65,6 +67,10 @@ CAPTURE_SCORE = 1_000_000
 BAD_CAPTURE_SCORE = -1_000_000
 """Captures that lose material (by SEE) are searched after every quiet move."""
 UNDERPROMOTION_SCORE = -1_500_000
+KILLER_SCORES = (900_000, 800_000)
+COUNTER_SCORE = 700_000
+HISTORY_MAX = 16384
+"""History scores stay within +/- this, so quiet moves sort between killers and bad captures."""
 
 Int32Array = npt.NDArray[np.int32]
 
@@ -93,6 +99,12 @@ class SearchStack(NamedTuple):
     sc: npt.NDArray[np.int64]
     """Scalars: stack pointer, loop mode, pending return value, nodes, seldepth, prev PV length."""
     see_buf: Int32Array
+    killers: Int32Array
+    """(MAX_SEARCH_PLY, 2): the last two quiet moves that caused a beta cutoff at each ply."""
+    history: Int32Array
+    """(2, 64, 64): side, from, to; rewarded on quiet cutoffs, penalised for quiets that failed."""
+    counter: Int32Array
+    """(12 * 64,): quiet refutation of the previous move, by its piece and destination."""
 
 
 def new_stack() -> SearchStack:
@@ -118,6 +130,9 @@ def new_stack() -> SearchStack:
         row(),
         np.zeros(8, np.int64),
         np.zeros(SEE_BUFFER, np.int32),
+        np.zeros((n, 2), np.int32),
+        np.zeros((2, 64, 64), np.int32),
+        np.zeros(12 * 64, np.int32),
     )
 
 
@@ -154,12 +169,58 @@ def is_repetition(pos: Position) -> bool:
 
 
 @njit
+def _counter_slot(pos: Position) -> int:
+    """Index into ``SearchStack.counter`` for the move that led here, or -1 after a null move or
+    at the start of the game record."""
+    ply = pos.st[ST_PLY]
+    if ply == 0:
+        return -1
+    prev = pos.undo[ply - 1, U_MOVE]
+    if prev == 0:
+        return -1
+    to = (prev >> 6) & 63
+    return int(pos.board[to]) * 64 + to
+
+
+@njit
+def _history_add(hist: Int32Array, m: int, bonus: int) -> None:
+    frm, to = m & 63, (m >> 6) & 63
+    h = hist[frm, to]
+    hist[frm, to] = h + bonus - h * abs(bonus) // HISTORY_MAX
+
+
+@njit
+def _quiet_cutoff(pos: Position, ss: SearchStack, p: int, m: int) -> None:
+    """Reward quiet move ``m`` for a beta cutoff at frame ``p`` and penalise the quiet moves
+    searched before it."""
+    if ss.killers[p, 0] != m:
+        ss.killers[p, 1] = ss.killers[p, 0]
+        ss.killers[p, 0] = m
+    counter = _counter_slot(pos)
+    if counter >= 0:
+        ss.counter[counter] = m
+    depth = ss.depth[p]
+    bonus = min(300 * depth - 250, 1500)
+    hist = ss.history[pos.st[ST_SIDE]]
+    _history_add(hist, m, bonus)
+    moves = ss.moves[p]
+    for k in range(ss.next_index[p] - 1):
+        q = moves[k]
+        if not ((q >> 12) & (CAPTURE | PROMO)):
+            _history_add(hist, q, -bonus)
+
+
+@njit
 def _score_moves(pos: Position, t: Tables, ss: SearchStack, p: int, n: int, tt_move: int) -> None:
     moves = ss.moves[p]
     order = ss.order[p]
     pv_move = -1
     if ss.flags[p] & FOLLOW_PV and p < ss.sc[SC_PREV_PV_LEN]:
         pv_move = ss.prev_pv[p]
+    killer0, killer1 = ss.killers[p, 0], ss.killers[p, 1]
+    counter = _counter_slot(pos)
+    counter_move = ss.counter[counter] if counter >= 0 else -1
+    hist = ss.history[pos.st[ST_SIDE]]
     for i in range(n):
         m = moves[i]
         if m == pv_move:
@@ -182,6 +243,14 @@ def _score_moves(pos: Position, t: Tables, ss: SearchStack, p: int, n: int, tt_m
             s = (BAD_CAPTURE_SCORE if losing else CAPTURE_SCORE) + mvv_lva
         elif flag & PROMO:
             s = CAPTURE_SCORE + (QUEEN + 1) * 8
+        elif m == killer0:
+            s = KILLER_SCORES[0]
+        elif m == killer1:
+            s = KILLER_SCORES[1]
+        elif m == counter_move:
+            s = COUNTER_SCORE
+        else:
+            s = hist[m & 63, (m >> 6) & 63]
         order[i] = s
 
 
@@ -340,6 +409,8 @@ def run(
                     ss.pv_len[p] = cl + 1
                     if score >= ss.beta[p]:
                         value = score
+                        if ss.depth[p] > 0 and not ((m >> 12) & (CAPTURE | PROMO)):
+                            _quiet_cutoff(pos, ss, p, m)
                         _store(pos, ss, tt, p, value)
                         mode = RETURN
     sc[SC_SP] = sp

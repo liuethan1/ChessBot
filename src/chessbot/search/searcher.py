@@ -145,6 +145,7 @@ class Searcher:
 
         ss, pos, t, ev, tt = self.ss, board.pos, board.t, self.ev, self.tt
         new_search_generation(tt)
+        ss.killers.fill(0)
         ss.sc[SC_NODES] = 0
         ss.sc[SC_PREV_PV_LEN] = 0
         result = SearchResult(legal[0], 0, 0, 0, 0.0, [legal[0]])
