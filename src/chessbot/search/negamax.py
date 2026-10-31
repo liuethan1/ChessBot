@@ -9,6 +9,10 @@ tree, and the next call carries on. The Python driver uses this to read the cloc
 A frame whose remaining depth is 0 or less is a quiescence node: stand pat, then captures and
 queen promotions only (or every evasion when in check).
 
+Moves after the first are searched with a null window around alpha (principal variation search);
+a move that lands strictly inside the frame's window is searched again with the full window. The
+re-search is a stage of the parent frame (``SearchStack.zw``), so it needs no recursion either.
+
 Every completed frame is stored in the transposition table, and non-PV frames (null window) return
 straight from a table entry that is deep enough and whose bound proves the result. The table move
 is searched first.
@@ -91,6 +95,8 @@ class SearchStack(NamedTuple):
     depth: Int32Array
     best_move: Int32Array
     flags: Int32Array
+    zw: Int32Array
+    """1 while the frame's current move is being searched with a null window (PVS)."""
     pv: Int32Array
     """(MAX_SEARCH_PLY, MAX_SEARCH_PLY) triangular PV table; row ``p`` starts at column ``p``."""
     pv_len: Int32Array
@@ -116,6 +122,7 @@ def new_stack() -> SearchStack:
     return SearchStack(
         np.zeros((n, MAX_MOVES), np.int32),
         np.zeros((n, MAX_MOVES), np.int32),
+        row(),
         row(),
         row(),
         row(),
@@ -333,6 +340,22 @@ def _store(pos: Position, ss: SearchStack, tt: TransTable, p: int, score: int) -
 
 
 @njit
+def _open_child(
+    pos: Position, t: Tables, ss: SearchStack, p: int, m: int, null_window: bool
+) -> int:
+    """Play ``m`` from frame ``p`` and set up the child frame's window; returns its index."""
+    make_move(pos, t, m)
+    c = p + 1
+    ss.zw[p] = 1 if null_window else 0
+    ss.alpha[c] = -ss.alpha[p] - 1 if null_window else -ss.beta[p]
+    ss.beta[c] = -ss.alpha[p]
+    ss.depth[c] = ss.depth[p] - 1
+    follow = ss.flags[p] & FOLLOW_PV and p < ss.sc[SC_PREV_PV_LEN] and m == ss.prev_pv[p]
+    ss.flags[c] = FOLLOW_PV if follow else 0
+    return c
+
+
+@njit
 def run(
     pos: Position, t: Tables, ev: EvalTables, ss: SearchStack, tt: TransTable, budget: int
 ) -> bool:
@@ -378,14 +401,7 @@ def run(
                 moves[j], moves[i] = moves[i], m
                 order[j], order[i] = order[i], order[j]
             ss.next_index[p] = i + 1
-            make_move(pos, t, m)
-            c = p + 1
-            ss.alpha[c] = -ss.beta[p]
-            ss.beta[c] = -ss.alpha[p]
-            ss.depth[c] = ss.depth[p] - 1
-            follow = ss.flags[p] & FOLLOW_PV and p < sc[SC_PREV_PV_LEN] and m == ss.prev_pv[p]
-            ss.flags[c] = FOLLOW_PV if follow else 0
-            sp = c
+            sp = _open_child(pos, t, ss, p, m, i > 0 and ss.beta[p] - ss.alpha[p] > 1)
             mode = ENTER
         else:
             if sp == 0:
@@ -396,6 +412,10 @@ def run(
             p = sp
             score = -value
             mode = NEXT
+            if ss.zw[p] and ss.alpha[p] < score < ss.beta[p]:
+                sp = _open_child(pos, t, ss, p, ss.moves[p, ss.next_index[p] - 1], False)
+                mode = ENTER
+                continue
             if score > ss.best[p]:
                 ss.best[p] = score
                 m = ss.moves[p, ss.next_index[p] - 1]
