@@ -35,6 +35,7 @@ from chessbot.core.position import (
     unmake_move,
 )
 from chessbot.search.evaluate import EvalTables, evaluate, insufficient_material
+from chessbot.search.see import SEE_BUFFER, see, see_value
 from chessbot.search.tt import (
     BOUND_EXACT,
     BOUND_LOWER,
@@ -61,6 +62,9 @@ FOLLOW_PV = 1
 
 PV_SCORE = 2_000_000
 CAPTURE_SCORE = 1_000_000
+BAD_CAPTURE_SCORE = -1_000_000
+"""Captures that lose material (by SEE) are searched after every quiet move."""
+UNDERPROMOTION_SCORE = -1_500_000
 
 Int32Array = npt.NDArray[np.int32]
 
@@ -88,6 +92,7 @@ class SearchStack(NamedTuple):
     """PV of the last completed iteration, followed first to order moves."""
     sc: npt.NDArray[np.int64]
     """Scalars: stack pointer, loop mode, pending return value, nodes, seldepth, prev PV length."""
+    see_buf: Int32Array
 
 
 def new_stack() -> SearchStack:
@@ -112,6 +117,7 @@ def new_stack() -> SearchStack:
         row(),
         row(),
         np.zeros(8, np.int64),
+        np.zeros(SEE_BUFFER, np.int32),
     )
 
 
@@ -148,7 +154,7 @@ def is_repetition(pos: Position) -> bool:
 
 
 @njit
-def _score_moves(pos: Position, ss: SearchStack, p: int, n: int, tt_move: int) -> None:
+def _score_moves(pos: Position, t: Tables, ss: SearchStack, p: int, n: int, tt_move: int) -> None:
     moves = ss.moves[p]
     order = ss.order[p]
     pv_move = -1
@@ -164,12 +170,18 @@ def _score_moves(pos: Position, ss: SearchStack, p: int, n: int, tt_move: int) -
             continue
         flag = (m >> 12) & 15
         s = 0
-        if flag & CAPTURE:
+        if flag & PROMO and (flag & 3) + 1 != QUEEN:
+            s = UNDERPROMOTION_SCORE
+        elif flag & CAPTURE:
             victim = PAWN if flag == EP_CAPTURE else pos.board[(m >> 6) & 63] % 6
             attacker = pos.board[m & 63] % 6
-            s = CAPTURE_SCORE + (victim + 1) * 8 - attacker
-        if flag & PROMO:
-            s = max(s, CAPTURE_SCORE) + (QUEEN + 1) * 8 if (flag & 3) + 1 == QUEEN else -1
+            mvv_lva = (victim + 1) * 8 - attacker
+            if flag & PROMO:
+                mvv_lva += (QUEEN + 1) * 8
+            losing = see_value(attacker) > see_value(victim) and see(pos, t, m, ss.see_buf) < 0
+            s = (BAD_CAPTURE_SCORE if losing else CAPTURE_SCORE) + mvv_lva
+        elif flag & PROMO:
+            s = CAPTURE_SCORE + (QUEEN + 1) * 8
         order[i] = s
 
 
@@ -212,9 +224,16 @@ def _enter(
         for i in range(n):
             m = moves[i]
             flag = (m >> 12) & 15
-            if not (flag & PROMO) or (flag & 3) + 1 == QUEEN:
-                moves[kept] = m
-                kept += 1
+            if flag & PROMO and (flag & 3) + 1 != QUEEN:
+                continue
+            if (
+                flag & CAPTURE
+                and see_value(pos.board[m & 63] % 6) > see_value(pos.board[(m >> 6) & 63] % 6)
+                and see(pos, t, m, ss.see_buf) < 0
+            ):
+                continue
+            moves[kept] = m
+            kept += 1
         if kept == 0:
             return True, stand
         n = kept
@@ -224,7 +243,7 @@ def _enter(
         if n == 0:
             return True, (p - MATE) if check else 0
         ss.best[p] = -INF
-    _score_moves(pos, ss, p, n, tt_move)
+    _score_moves(pos, t, ss, p, n, tt_move)
     ss.n_moves[p] = n
     ss.next_index[p] = 0
     ss.best_move[p] = 0

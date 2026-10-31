@@ -14,6 +14,7 @@ from chessbot.search import Limits, Searcher, SearchInfo, warmup
 from chessbot.search.evaluate import eval_tables, evaluate, insufficient_material
 from chessbot.search.negamax import MATE, is_repetition
 from chessbot.search.searcher import plan_time
+from chessbot.search.see import SEE_BUFFER, see
 from chessbot.search.tt import (
     BOUND_LOWER,
     BOUND_UPPER,
@@ -259,3 +260,20 @@ def test_table_reuse_saves_nodes_on_the_next_search() -> None:
     again = searcher.search(Board(KIWIPETE), Limits(depth=5))
     assert again.best_move == first.best_move
     assert again.nodes < first.nodes
+
+
+@pytest.mark.parametrize(
+    ("fen", "uci", "value"),
+    [
+        ("1k1r4/1pp4p/p7/4p3/8/P5P1/1PP4P/2K1R3 w - - 0 1", "e1e5", 100),
+        ("1k1r3q/1ppn3p/p4b2/4p3/8/P2N2P1/1PP1R1BP/2K1Q3 w - - 0 1", "d3e5", -220),
+        ("4k3/8/2p5/3p4/4P3/8/8/4K3 w - - 0 1", "e4d5", 0),
+        ("4k3/8/2p5/3p4/8/8/3Q4/4K3 w - - 0 1", "d2d5", -800),
+        ("4k3/1P6/8/8/8/8/8/4K3 w - - 0 1", "b7b8q", 800),
+        ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6", 100),
+    ],
+)
+def test_static_exchange_evaluation(fen: str, uci: str, value: int) -> None:
+    board = Board(fen)
+    move = next(m for m in board.legal_moves() if move_to_uci(m) == uci)
+    assert see(board.pos, board.t, move, np.zeros(SEE_BUFFER, np.int32)) == value
