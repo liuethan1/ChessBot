@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy
+
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: sudo apt-get update && sudo apt-get install -y stockfish
+      - run: pip install -e ".[dev]"
+      - run: pytest -m "not slow"
+
+  measurement:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: sudo apt-get update && sudo apt-get install -y stockfish
+      - run: pip install -e ".[dev]"
+      - run: chessbot-fetch fastchess
+      - name: Slow tests (legacy ACPL baseline, fastchess match)
+        run: pytest -m slow
+      - name: Perft suites agree with Stockfish
+        run: |
+          chessbot-perft --suite cpw --backend uci:/usr/games/stockfish --all-depths --max-nodes 50000000
+          chessbot-perft --suite standard --backend uci:/usr/games/stockfish --max-nodes 50000000
+      - name: Legacy bot ACPL baseline
+        run: chessbot-acpl legacy/legacy-selfplay-game.pgn --depth 14
