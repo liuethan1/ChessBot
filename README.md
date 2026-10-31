@@ -7,15 +7,44 @@ NNUE evaluation, an opening book, and Syzygy endgame tablebases.
 The engine is built in phases (see the remake plan). Phase 0 adds the package skeleton and the
 measurement tooling used to judge every later change. Phase 1 adds the engine core in
 `chessbot.core`: numba-jitted bitboards with magic sliders, FEN I/O, Zobrist keys, make/unmake,
-and a legal move generator that passes both perft suites.
+and a legal move generator that passes both perft suites. Phase 2 makes it a playable UCI engine:
+`chessbot.search` adds iterative deepening alpha-beta with quiescence, a PeSTO tapered evaluation,
+MVV-LVA capture ordering, draw detection, and time management.
+
+## Playing
+
+```bash
+python -m chessbot          # or the `chessbot` script; speaks UCI on stdin/stdout
+```
+
+Point a GUI, fastchess, cutechess-cli, or lichess-bot at that command. Supported: `go` with
+`wtime`/`btime`/`winc`/`binc`/`movestogo`/`movetime`/`depth`/`nodes`/`infinite`, `stop`,
+`go perft N`, and `d` (prints the FEN). Options: `Move Overhead` (ms kept in reserve per move,
+default 50), plus `UCI_LimitStrength` and `UCI_Elo`, which are accepted but have no effect yet.
+
+## Search
+
+The search (`chessbot/search/negamax.py`) is a fail-soft negamax over an explicit stack rather
+than a recursive function, because numba segfaults when it reloads a cached recursive function.
+That also makes it resumable: the Python driver (`searcher.py`) runs it in chunks of 2048 nodes
+and checks the clock and `stop` in between, so the jitted code needs no clock. Nodes at depth 0
+or below are quiescence nodes (stand pat, then captures and queen promotions, or every evasion
+when in check). Moves are ordered previous-iteration PV first, then MVV-LVA captures, then quiet
+moves. Repetitions, the 50-move rule, and bare-minor endings score as draws.
+
+Time management: with a clock, the target is `remaining / 30 + 0.75 * increment` (fewer moves if
+`movestogo` is smaller); no new iteration starts after 55% of the target, and the search is cut
+off mid-iteration at `min(4 * target, 0.3 * remaining + increment / 2)`. `Move Overhead` is
+subtracted from the remaining time first.
 
 ## Engine core and numba compile time
 
-Every jitted function uses `cache=True`. The first run on a machine compiles the core (several
-seconds); later processes load it from the cache (`~/.cache/chessbot/numba-<hash>`, override with
-`CHESSBOT_CACHE_DIR`). The cache directory is keyed by a hash of the `chessbot.core` sources, so
-editing any core file triggers a clean recompile. Call `chessbot.core.warmup()` before the clock
-starts (the UCI loop will do this on `uci`/`isready`).
+Every jitted function uses `cache=True`. The first run on a machine compiles the core and the
+search (about 10-20 seconds); later processes load it from the cache
+(`~/.cache/chessbot/numba-<hash>`, override with `CHESSBOT_CACHE_DIR`). The cache directory is
+keyed by a hash of the `chessbot.core` and `chessbot.search` sources, so editing any of them
+triggers a clean recompile. `chessbot.search.warmup()` loads everything; the UCI loop starts it on
+`uci` and waits for it before answering `isready`, so it never runs on the clock.
 
 ```bash
 chessbot-warmup --check 5   # fails if a fresh process needs more than 5 s to be ready
@@ -51,7 +80,7 @@ package manager (`apt install stockfish`) or set `STOCKFISH_PATH`.
 | `chessbot-match` | Runs an SPRT or fixed-length match with fastchess (default) or cutechess-cli on an opening book |
 | `chessbot-sprt` | Computes the SPRT log-likelihood ratio and an Elo estimate from W/D/L or pentanomial counts |
 | `chessbot-acpl` | Average centipawn loss, blunders, and mistakes for each side of a PGN, using Stockfish |
-| `chessbot-warmup` | Times how long a fresh process takes to import and warm up the jitted core; `--check SECONDS` fails CI when the numba cache is not doing its job |
+| `chessbot-warmup` | Times how long a fresh process takes to import and warm up the jitted core and search; `--check SECONDS` fails CI when the numba cache is not doing its job |
 | `chessbot-fetch` | Downloads pinned, checksummed books, suites, and the fastchess binary into `external/` |
 
 Examples:
@@ -59,6 +88,7 @@ Examples:
 ```bash
 chessbot-perft --suite standard --backend "uci:stockfish"
 chessbot-bench --engine stockfish --depth 10
+chessbot-bench --engine "python -m chessbot" --depth 5
 chessbot-suite external/suites/wac.epd --engine stockfish --movetime 0.1
 chessbot-match --new "./engine-new" --base "./engine-main" --tc 8+0.08 --sprt 0 5 --concurrency 4
 chessbot-match --new "./engine-new" --base stockfish --base-option UCI_LimitStrength=true --base-option UCI_Elo=1500 --games 200

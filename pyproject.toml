@@ -25,6 +25,7 @@ dev = [
 ]
 
 [project.scripts]
+chessbot = "chessbot.uci:main"
 chessbot-perft = "chessbot.tools.perft:main"
 chessbot-bench = "chessbot.tools.bench:main"
 chessbot-suite = "chessbot.tools.suite:main"

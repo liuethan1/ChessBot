@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import sys
 from importlib import resources
 from pathlib import Path
 
@@ -28,11 +29,24 @@ def find_binary(name: str, env_var: str) -> str | None:
 
 
 def split_command(command: str) -> list[str]:
-    """Split an engine command line such as ``"python -m chessbot"`` into argv."""
-    argv = shlex.split(command)
+    """Split an engine command line such as ``"python -m chessbot"`` into argv.
+
+    On Windows, POSIX shlex rules would treat the backslashes in paths as escapes, so the
+    command is split in non-POSIX mode and quotes around whole arguments are removed.
+    """
+    if sys.platform == "win32":
+        argv = [_unquote(arg) for arg in shlex.split(command, posix=False)]
+    else:
+        argv = shlex.split(command)
     if not argv:
         raise ValueError("empty engine command")
     return argv
+
+
+def _unquote(arg: str) -> str:
+    if len(arg) >= 2 and arg[0] == arg[-1] and arg[0] in "'\"":
+        return arg[1:-1]
+    return arg
 
 
 def parse_options(pairs: list[str] | None) -> dict[str, str]:

@@ -56,8 +56,10 @@ jobs:
         run: |
           chessbot-perft --suite cpw --backend uci:/usr/games/stockfish --all-depths --max-nodes 50000000
           chessbot-perft --suite standard --backend uci:/usr/games/stockfish --max-nodes 50000000
-      - name: Warm start of the numba core stays under 5 s
+      - name: Warm start of the numba core and search stays under 5 s
         run: chessbot-warmup --check 5
+      - name: Engine bench (node count fingerprint and speed)
+        run: chessbot-bench --engine "python -m chessbot" --depth 5
       - name: Perft suites with the in-process numba move generator
         run: |
           chessbot-perft --suite cpw --backend py:chessbot.core.perft:perft_fen --all-depths --max-nodes 1000000000
