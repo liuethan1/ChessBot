@@ -277,3 +277,13 @@ def test_static_exchange_evaluation(fen: str, uci: str, value: int) -> None:
     board = Board(fen)
     move = next(m for m in board.legal_moves() if move_to_uci(m) == uci)
     assert see(board.pos, board.t, move, np.zeros(SEE_BUFFER, np.int32)) == value
+
+
+def test_aspiration_windows_report_only_completed_iterations() -> None:
+    # From depth 4 each iteration starts with a narrow window; whatever re-searches that needs,
+    # every reported depth must come with a PV and the result must match the last report.
+    infos: list[SearchInfo] = []
+    result = Searcher().search(Board(KIWIPETE), Limits(depth=7), on_info=infos.append)
+    assert [i.depth for i in infos] == list(range(1, 8))
+    assert result.best_move == infos[-1].pv[0]
+    assert result.score == infos[-1].score

@@ -185,7 +185,7 @@ def _counter_slot(pos: Position) -> int:
     prev = pos.undo[ply - 1, U_MOVE]
     if prev == 0:
         return -1
-    to = (prev >> 6) & 63
+    to = int(prev >> 6) & 63
     return int(pos.board[to]) * 64 + to
 
 

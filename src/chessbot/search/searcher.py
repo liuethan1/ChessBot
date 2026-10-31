@@ -31,6 +31,11 @@ CHUNK_NODES = 2048
 DEFAULT_MOVES_TO_GO = 30
 SOFT_STOP_FRACTION = 0.55
 """Do not start another iteration once this fraction of the soft budget is used."""
+ASPIRATION_MIN_DEPTH = 4
+ASPIRATION_DELTA = 20
+"""Half-width in centipawns of the first window around the previous iteration's score."""
+ASPIRATION_MAX_DELTA = 600
+"""Past this half-width the window is opened fully."""
 
 
 @dataclass
@@ -153,41 +158,66 @@ class Searcher:
         def elapsed_ms() -> float:
             return (time.perf_counter() - start) * 1000
 
-        for depth in range(1, max_depth + 1):
-            start_iteration(ss, depth, -INF, INF)
-            aborted = False
+        def run_window(depth: int, alpha: int, beta: int) -> bool:
+            """Search the root to ``depth`` within ``(alpha, beta)``; False if abandoned."""
+            start_iteration(ss, depth, alpha, beta)
             while True:
                 chunk = CHUNK_NODES
                 if limits.nodes is not None:
                     chunk = min(chunk, limits.nodes - int(ss.sc[SC_NODES]))
                     if chunk <= 0:
-                        aborted = True
-                        break
+                        return False
                 if run(pos, t, ev, ss, tt, chunk):
-                    break
+                    return True
                 if stop is not None and stop.is_set():
-                    aborted = True
-                    break
+                    return False
                 if budget.hard_ms is not None and depth > 1 and elapsed_ms() >= budget.hard_ms:
-                    aborted = True
+                    return False
+
+        def root_pv() -> list[int]:
+            pv_len = int(ss.pv_len[0])
+            return [int(m) for m in ss.pv[0, :pv_len]]
+
+        score = 0
+        for depth in range(1, max_depth + 1):
+            delta = ASPIRATION_DELTA
+            alpha, beta = -INF, INF
+            if depth >= ASPIRATION_MIN_DEPTH and abs(score) < MATE_BOUND:
+                alpha, beta = max(score - delta, -INF), min(score + delta, INF)
+            while True:
+                finished = run_window(depth, alpha, beta)
+                if not finished:
                     break
+                value = int(ss.sc[SC_VALUE])
+                pv = root_pv()
+                if pv:
+                    ss.prev_pv[: len(pv)] = pv
+                    ss.sc[SC_PREV_PV_LEN] = len(pv)
+                if value <= alpha:
+                    beta = (alpha + beta) // 2
+                    alpha = max(value - delta, -INF)
+                elif value >= beta:
+                    beta = min(value + delta, INF)
+                    result.best_move, result.pv, result.score = pv[0], pv, value
+                else:
+                    break
+                delta += delta // 2
+                if delta > ASPIRATION_MAX_DELTA:
+                    alpha, beta = -INF, INF
 
             nodes = int(ss.sc[SC_NODES])
-            if aborted:
+            if not finished:
                 unwind(pos, t, ss)
-                if ss.best_move[0]:
-                    pv_len = int(ss.pv_len[0])
-                    result.best_move = int(ss.best_move[0])
-                    result.pv = [int(m) for m in ss.pv[0, :pv_len]] or [result.best_move]
-                    result.score = int(ss.best[0])
+                # A root move that beat alpha in the abandoned iteration was fully searched
+                # (PVS re-searches before it is accepted), so it is at least as good as the last
+                # completed iteration's choice.
+                pv = root_pv()
+                if pv:
+                    result.best_move, result.pv, result.score = pv[0], pv, int(ss.best[0])
                 result.nodes = nodes
                 break
 
-            pv_len = int(ss.pv_len[0])
-            ss.prev_pv[:pv_len] = ss.pv[0, :pv_len]
-            ss.sc[SC_PREV_PV_LEN] = pv_len
-            pv = [int(m) for m in ss.pv[0, :pv_len]]
-            score = int(ss.sc[SC_VALUE])
+            score = value
             result = SearchResult(pv[0], score, depth, nodes, 0.0, pv)
             info = SearchInfo(depth, int(ss.sc[SC_SELDEPTH]), score, nodes, elapsed_ms() / 1000, pv)
             if on_info is not None:
