@@ -5,7 +5,30 @@ engine: a UCI engine written in Python with numba/numpy speedups, alpha-beta sea
 NNUE evaluation, an opening book, and Syzygy endgame tablebases.
 
 The engine is built in phases (see the remake plan). Phase 0 adds the package skeleton and the
-measurement tooling used to judge every later change.
+measurement tooling used to judge every later change. Phase 1 adds the engine core in
+`chessbot.core`: numba-jitted bitboards with magic sliders, FEN I/O, Zobrist keys, make/unmake,
+and a legal move generator that passes both perft suites.
+
+## Engine core and numba compile time
+
+Every jitted function uses `cache=True`. The first run on a machine compiles the core (several
+seconds); later processes load it from the cache (`~/.cache/chessbot/numba-<hash>`, override with
+`CHESSBOT_CACHE_DIR`). The cache directory is keyed by a hash of the `chessbot.core` sources, so
+editing any core file triggers a clean recompile. Call `chessbot.core.warmup()` before the clock
+starts (the UCI loop will do this on `uci`/`isready`).
+
+```bash
+chessbot-warmup --check 5   # fails if a fresh process needs more than 5 s to be ready
+chessbot-perft --suite standard --all-depths --backend py:chessbot.core.perft:perft_fen
+```
+
+```python
+from chessbot.core import Board
+
+board = Board()
+board.push_uci("e2e4")
+board.legal_uci(), board.fen(), board.key, board.perft(5)
+```
 
 ## Setup
 
@@ -28,6 +51,7 @@ package manager (`apt install stockfish`) or set `STOCKFISH_PATH`.
 | `chessbot-match` | Runs an SPRT or fixed-length match with fastchess (default) or cutechess-cli on an opening book |
 | `chessbot-sprt` | Computes the SPRT log-likelihood ratio and an Elo estimate from W/D/L or pentanomial counts |
 | `chessbot-acpl` | Average centipawn loss, blunders, and mistakes for each side of a PGN, using Stockfish |
+| `chessbot-warmup` | Times how long a fresh process takes to import and warm up the jitted core; `--check SECONDS` fails CI when the numba cache is not doing its job |
 | `chessbot-fetch` | Downloads pinned, checksummed books, suites, and the fastchess binary into `external/` |
 
 Examples:

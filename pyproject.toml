@@ -32,6 +32,7 @@ chessbot-match = "chessbot.tools.match:main"
 chessbot-sprt = "chessbot.tools.sprt:main"
 chessbot-acpl = "chessbot.tools.acpl:main"
 chessbot-fetch = "chessbot.tools.fetch:main"
+chessbot-warmup = "chessbot.tools.warmup:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chessbot"]
@@ -50,7 +51,7 @@ strict = true
 files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
-module = ["numba", "numba.*"]
+module = ["numba", "numba.*", "llvmlite", "llvmlite.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
