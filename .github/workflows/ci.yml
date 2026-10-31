@@ -56,5 +56,11 @@ jobs:
         run: |
           chessbot-perft --suite cpw --backend uci:/usr/games/stockfish --all-depths --max-nodes 50000000
           chessbot-perft --suite standard --backend uci:/usr/games/stockfish --max-nodes 50000000
+      - name: Warm start of the numba core stays under 5 s
+        run: chessbot-warmup --check 5
+      - name: Perft suites with the in-process numba move generator
+        run: |
+          chessbot-perft --suite cpw --backend py:chessbot.core.perft:perft_fen --all-depths --max-nodes 1000000000
+          chessbot-perft --suite standard --backend py:chessbot.core.perft:perft_fen --all-depths --max-nodes 1000000000
       - name: Legacy bot ACPL baseline
         run: chessbot-acpl legacy/legacy-selfplay-game.pgn --depth 14
