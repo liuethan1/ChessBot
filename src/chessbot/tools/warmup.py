@@ -1,8 +1,9 @@
-"""Warm-start check: how long a fresh process needs before the jitted engine core is ready.
+"""Warm-start check: how long a fresh process needs before the jitted engine is ready.
 
-Without ``--check`` this warms up in-process and prints the time. With ``--check SECONDS`` it
-starts two fresh interpreters: the first fills the numba cache if it is empty (a cold compile),
-the second must import and warm up within ``SECONDS`` or the command exits with status 1.
+This covers both the core (move generation) and the search. Without ``--check`` it warms up
+in-process and prints the time. With ``--check SECONDS`` it starts two fresh interpreters: the
+first fills the numba cache if it is empty (a cold compile), the second must import and warm up
+within ``SECONDS`` or the command exits with status 1.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ import subprocess
 import sys
 import time
 
-CHILD = "from chessbot.core import warmup; warmup()"
+CHILD = "from chessbot.search import warmup; warmup()"
 
 
 def fresh_process_seconds() -> float:
@@ -29,8 +30,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     start = time.perf_counter()
-    from chessbot.core import warmup
     from chessbot.core.jit import cache_dir
+    from chessbot.search import warmup
 
     imported = time.perf_counter() - start
     print(f"numba cache: {cache_dir()}")
