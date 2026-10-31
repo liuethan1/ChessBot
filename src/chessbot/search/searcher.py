@@ -179,6 +179,7 @@ class Searcher:
             return [int(m) for m in ss.pv[0, :pv_len]]
 
         score = 0
+        reported: list[int] = []
         for depth in range(1, max_depth + 1):
             delta = ASPIRATION_DELTA
             alpha, beta = -INF, INF
@@ -215,11 +216,16 @@ class Searcher:
                 if pv:
                     result.best_move, result.pv, result.score = pv[0], pv, int(ss.best[0])
                 result.nodes = nodes
+                if on_info is not None and result.pv != reported:
+                    seldepth = int(ss.sc[SC_SELDEPTH])
+                    seconds = elapsed_ms() / 1000
+                    on_info(SearchInfo(depth, seldepth, result.score, nodes, seconds, result.pv))
                 break
 
             score = value
             result = SearchResult(pv[0], score, depth, nodes, 0.0, pv)
             info = SearchInfo(depth, int(ss.sc[SC_SELDEPTH]), score, nodes, elapsed_ms() / 1000, pv)
+            reported = pv
             if on_info is not None:
                 on_info(info)
 
