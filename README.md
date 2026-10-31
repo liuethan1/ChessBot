@@ -19,8 +19,11 @@ python -m chessbot          # or the `chessbot` script; speaks UCI on stdin/stdo
 
 Point a GUI, fastchess, cutechess-cli, or lichess-bot at that command. Supported: `go` with
 `wtime`/`btime`/`winc`/`binc`/`movestogo`/`movetime`/`depth`/`nodes`/`infinite`, `stop`,
-`go perft N`, and `d` (prints the FEN). Options: `Move Overhead` (ms kept in reserve per move,
-default 50), plus `UCI_LimitStrength` and `UCI_Elo`, which are accepted but have no effect yet.
+`go perft N`, `bench [depth]` (searches the bench positions from an empty table and prints the
+node count and speed; default depth 6), and `d` (prints the FEN). Options: `Hash` (transposition
+table size in MB, default 16), `Move Overhead` (ms kept in reserve per move, default 50), plus
+`UCI_LimitStrength` and `UCI_Elo`, which are accepted but have no effect yet. Arguments run one
+command and exit, as in `python -m chessbot bench 6`.
 
 ## Search
 
@@ -28,9 +31,24 @@ The search (`chessbot/search/negamax.py`) is a fail-soft negamax over an explici
 than a recursive function, because numba segfaults when it reloads a cached recursive function.
 That also makes it resumable: the Python driver (`searcher.py`) runs it in chunks of 2048 nodes
 and checks the clock and `stop` in between, so the jitted code needs no clock. Nodes at depth 0
-or below are quiescence nodes (stand pat, then captures and queen promotions, or every evasion
-when in check). Moves are ordered previous-iteration PV first, then MVV-LVA captures, then quiet
-moves. Repetitions, the 50-move rule, and bare-minor endings score as draws.
+or below are quiescence nodes (stand pat, then captures and queen promotions that do not lose
+material by static exchange evaluation, or every evasion when in check). Repetitions, the 50-move
+rule, and bare-minor endings score as draws.
+
+- **Transposition table** (`tt.py`): 16-byte entries (key, move, score, static eval, depth, bound,
+  generation) in parallel numpy arrays, indexed by the low key bits. Every completed frame is
+  stored; null-window frames return straight from an entry that is deep enough and whose bound
+  proves the result. Mate scores are stored relative to the node.
+- **Move ordering**: previous-iteration PV move, table move, captures that win or break even by SEE
+  (MVV-LVA among them), two killers per ply, the counter-move to the opponent's last move, quiet
+  moves by history (with gravity, and a penalty for quiets that failed before a cutoff), losing
+  captures, underpromotions.
+- **Principal variation search**: moves after the first are searched with a null window and
+  searched again with the full window only if they land inside it. The re-search is a stage of
+  the parent frame, so the search stays non-recursive.
+- **Aspiration windows**: from depth 4 each iteration starts at +/-20 cp around the previous score
+  and widens by half on each fail low or fail high.
+- **Check extension**: a side in check at a full-width node is searched one ply deeper.
 
 Time management: with a clock, the target is `remaining / 30 + 0.75 * increment` (fewer moves if
 `movestogo` is smaller); no new iteration starts after 55% of the target, and the search is cut

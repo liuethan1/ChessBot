@@ -24,7 +24,7 @@ AUTHOR = "Ethan Liu"
 MIN_ELO, MAX_ELO = 1320, 3190
 
 GO_INT_FIELDS = ("wtime", "btime", "winc", "binc", "movestogo", "movetime", "depth", "nodes")
-BENCH_DEPTH = 8
+BENCH_DEPTH = 6
 
 
 def format_info(info: SearchInfo) -> str:
@@ -240,8 +240,18 @@ class UciEngine:
         self.send(f"bestmove {move_to_uci(result.best_move) if result.best_move else '0000'}")
 
 
-def main(stdin: TextIO | None = None, stdout: TextIO | None = None) -> int:
+def main(
+    stdin: TextIO | None = None, stdout: TextIO | None = None, argv: list[str] | None = None
+) -> int:
+    """Run the UCI loop; with arguments (``python -m chessbot bench 6``), run them as a single
+    command instead and exit."""
     engine = UciEngine(stdout)
+    if argv is None:
+        argv = sys.argv[1:] if stdin is None else []
+    if argv:
+        engine.handle(" ".join(argv))
+        engine.wait_search()
+        return 0
     for line in stdin if stdin is not None else sys.stdin:
         if not engine.handle(line):
             break

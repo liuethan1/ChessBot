@@ -14,7 +14,7 @@ from chessbot.search import SearchInfo
 from chessbot.search.negamax import MATE
 from chessbot.tools.bench import run_bench
 from chessbot.tools.perft import UciBackend
-from chessbot.uci import UciEngine, format_info, parse_go
+from chessbot.uci import UciEngine, format_info, main, parse_go
 
 ENGINE = [sys.executable, "-m", "chessbot"]
 
@@ -45,6 +45,14 @@ def test_hash_option_resizes_the_table() -> None:
         engine.handle(line)
     assert engine.searcher is not None
     assert engine.searcher.tt.keys.nbytes == (2 << 20) // 2
+
+
+def test_command_line_runs_one_command() -> None:
+    out = io.StringIO()
+    assert main(stdin=io.StringIO("go depth 1\n"), stdout=out, argv=["bench", "2"]) == 0
+    lines = out.getvalue().splitlines()
+    assert any(line.startswith("Nodes searched") for line in lines)
+    assert not any(line.startswith("bestmove") for line in lines)
 
 
 def test_bench_command_is_deterministic() -> None:

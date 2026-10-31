@@ -59,7 +59,9 @@ jobs:
       - name: Warm start of the numba core and search stays under 5 s
         run: chessbot-warmup --check 5
       - name: Engine bench (node count fingerprint and speed)
-        run: chessbot-bench --engine "python -m chessbot" --depth 5
+        run: |
+          chessbot-bench --engine "python -m chessbot" --depth 5
+          python -m chessbot bench
       - name: Perft suites with the in-process numba move generator
         run: |
           chessbot-perft --suite cpw --backend py:chessbot.core.perft:perft_fen --all-depths --max-nodes 1000000000
