@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import sys
 import tarfile
 import zipfile
 from pathlib import Path
@@ -79,4 +80,5 @@ def test_fetch_extracts_tar_binary(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     asset = fetch.Asset("u", hashlib.sha256(payload).hexdigest(), "bin/tool", "dir/tool")
     target = fetch.fetch(asset, tmp_path)
     assert target.read_bytes() == b"\x7fELF"
-    assert target.stat().st_mode & 0o111
+    if sys.platform != "win32":
+        assert target.stat().st_mode & 0o111
