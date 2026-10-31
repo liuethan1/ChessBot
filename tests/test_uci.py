@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import shlex
 import subprocess
 import sys
 import time
@@ -132,7 +133,7 @@ def test_quit_exits_promptly() -> None:
 
 
 def test_perft_tool_uci_backend() -> None:
-    backend = UciBackend(" ".join(ENGINE))
+    backend = UciBackend(shlex.join(ENGINE))
     try:
         assert backend.perft(chess.STARTING_FEN, 3) == 8902
         assert backend.divide(chess.STARTING_FEN, 2)["e2e4"] == 20
@@ -142,6 +143,6 @@ def test_perft_tool_uci_backend() -> None:
 
 @pytest.mark.slow
 def test_bench_tool_runs_the_engine() -> None:
-    result = run_bench(" ".join(ENGINE), 3, [chess.STARTING_FEN, chess.Board().fen()])
+    result = run_bench(shlex.join(ENGINE), 3, [chess.STARTING_FEN, chess.Board().fen()])
     assert result.engine.startswith("ChessBot")
     assert result.positions[0].nodes == result.positions[1].nodes > 0

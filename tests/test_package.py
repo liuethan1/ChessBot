@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import shlex
 import sys
 import tarfile
 import zipfile
@@ -11,10 +12,27 @@ import pytest
 
 import chessbot
 from chessbot.tools import fetch
+from chessbot.tools.common import split_command
 
 
 def test_version() -> None:
     assert chessbot.__version__
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_split_command_round_trips_windows_paths(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    monkeypatch.setattr(sys, "platform", platform)
+    argv = [r"C:\Program Files\Python\python.exe", "-m", "chessbot"]
+    assert split_command(shlex.join(argv)) == argv
+    assert split_command("python -m chessbot") == ["python", "-m", "chessbot"]
+
+
+def test_split_command_windows_double_quotes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    command = r'"C:\Program Files\Stockfish\stockfish.exe" --flag'
+    assert split_command(command) == [r"C:\Program Files\Stockfish\stockfish.exe", "--flag"]
 
 
 def test_numba_jit_compiles() -> None:
