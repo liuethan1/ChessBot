@@ -35,6 +35,25 @@ def test_handshake_and_options() -> None:
     assert lines[-1] == "readyok"
     assert any("UCI_Elo" in line for line in lines)
     assert any("Move Overhead" in line for line in lines)
+    assert any(line.startswith("option name Hash type spin") for line in lines)
+
+
+def test_hash_option_resizes_the_table() -> None:
+    out = io.StringIO()
+    engine = UciEngine(out)
+    for line in ("isready", "setoption name Hash value 2"):
+        engine.handle(line)
+    assert engine.searcher is not None
+    assert engine.searcher.tt.keys.nbytes == (2 << 20) // 2
+
+
+def test_bench_command_is_deterministic() -> None:
+    first = run_commands("isready", "bench 3")
+    second = run_commands("isready", "bench 3")
+    nodes = [line for line in first if line.startswith("Nodes searched")]
+    assert len(nodes) == 1
+    assert int(nodes[0].split(":")[1]) > 0
+    assert nodes == [line for line in second if line.startswith("Nodes searched")]
 
 
 def test_parse_go() -> None:

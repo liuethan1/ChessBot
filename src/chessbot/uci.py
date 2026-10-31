@@ -17,12 +17,14 @@ from chessbot import __version__
 from chessbot.core.board import Board
 from chessbot.core.position import START_FEN, move_to_uci
 from chessbot.search import Limits, Searcher, SearchInfo, SearchResult, warmup
+from chessbot.search.tt import DEFAULT_HASH_MB, MAX_HASH_MB
 
 ENGINE_NAME = f"ChessBot {__version__}"
 AUTHOR = "Ethan Liu"
 MIN_ELO, MAX_ELO = 1320, 3190
 
 GO_INT_FIELDS = ("wtime", "btime", "winc", "binc", "movestogo", "movetime", "depth", "nodes")
+BENCH_DEPTH = 8
 
 
 def format_info(info: SearchInfo) -> str:
@@ -63,6 +65,7 @@ class UciEngine:
         self.board: Board | None = None
         self.searcher: Searcher | None = None
         self.move_overhead = 50
+        self.hash_mb = DEFAULT_HASH_MB
         self.limit_strength = False
         self.elo = MAX_ELO
 
@@ -78,7 +81,7 @@ class UciEngine:
 
     def _warmup(self) -> None:
         warmup()
-        self.searcher = Searcher()
+        self.searcher = Searcher(hash_mb=self.hash_mb)
         self.board = Board()
         self._warm.set()
 
@@ -106,6 +109,9 @@ class UciEngine:
             self.start_warmup()
             self.send(f"id name {ENGINE_NAME}")
             self.send(f"id author {AUTHOR}")
+            self.send(
+                f"option name Hash type spin default {DEFAULT_HASH_MB} min 1 max {MAX_HASH_MB}"
+            )
             self.send("option name Move Overhead type spin default 50 min 0 max 5000")
             self.send("option name UCI_LimitStrength type check default false")
             self.send(
@@ -121,6 +127,8 @@ class UciEngine:
             self.stop_search()
             self.wait_ready()
             self.board = Board()
+            assert self.searcher is not None
+            self.searcher.new_game()
         elif cmd == "position":
             self.stop_search()
             self.wait_ready()
@@ -138,6 +146,10 @@ class UciEngine:
         elif cmd == "quit":
             self.stop_search()
             return False
+        elif cmd == "bench":
+            self.stop_search()
+            self.wait_ready()
+            self.bench(int(args[0]) if args else BENCH_DEPTH)
         elif cmd == "d":
             self.wait_ready()
             assert self.board is not None
@@ -153,7 +165,12 @@ class UciEngine:
             name, value = " ".join(rest[:split]).lower(), " ".join(rest[split + 1 :])
         else:
             name, value = " ".join(rest).lower(), ""
-        if name == "move overhead":
+        if name == "hash":
+            self.hash_mb = min(MAX_HASH_MB, max(1, int(value)))
+            if self.searcher is not None:
+                self.stop_search()
+                self.searcher.resize_hash(self.hash_mb)
+        elif name == "move overhead":
             self.move_overhead = max(0, int(value))
         elif name == "uci_limitstrength":
             self.limit_strength = value.lower() == "true"
@@ -181,6 +198,24 @@ class UciEngine:
         for move, count in divide.items():
             self.send(f"{move}: {count}")
         self.send(f"\nNodes searched: {sum(divide.values())}")
+
+    def bench(self, depth: int) -> None:
+        """Search every position of the bench set to ``depth`` from a fresh table, then print
+        the total node count (a fingerprint of the search) and the speed."""
+        from chessbot.tools.bench import read_fens
+        from chessbot.tools.common import data_path
+
+        searcher = Searcher(hash_mb=self.hash_mb)
+        nodes, seconds = 0, 0.0
+        for fen in read_fens(data_path("bench.epd")):
+            searcher.new_game()
+            result = searcher.search(Board(fen), Limits(depth=depth))
+            nodes += result.nodes
+            seconds += result.seconds
+        nps = int(nodes / seconds) if seconds > 0 else 0
+        self.send(f"Total time (ms) : {int(seconds * 1000)}")
+        self.send(f"Nodes searched  : {nodes}")
+        self.send(f"Nodes/second    : {nps}")
 
     def go(self, limits: Limits, received: float | None = None) -> None:
         assert self.board is not None

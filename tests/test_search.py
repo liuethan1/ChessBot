@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 import chess
+import numpy as np
 import pytest
 
 from chessbot.core import Board
@@ -13,6 +14,17 @@ from chessbot.search import Limits, Searcher, SearchInfo, warmup
 from chessbot.search.evaluate import eval_tables, evaluate, insufficient_material
 from chessbot.search.negamax import MATE, is_repetition
 from chessbot.search.searcher import plan_time
+from chessbot.search.tt import (
+    BOUND_LOWER,
+    BOUND_UPPER,
+    ENTRY_BYTES,
+    clear_tt,
+    new_tt,
+    score_from_tt,
+    score_to_tt,
+    tt_index,
+    tt_store,
+)
 
 KIWIPETE = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
 EVAL_FENS = [
@@ -204,3 +216,46 @@ def test_time_plan() -> None:
     assert tiny.hard_ms is not None
     assert tiny.hard_ms >= 1
     assert plan_time(Limits(wtime=60_000, movestogo=2), True, 50).hard_ms is not None
+
+
+def test_tt_mate_scores_are_stored_relative_to_the_node() -> None:
+    mate_in_3_from_ply_5 = MATE - 10
+    stored = score_to_tt(mate_in_3_from_ply_5, 5)
+    assert stored == MATE - 5
+    assert score_from_tt(stored, 2) == MATE - 7
+    assert score_from_tt(score_to_tt(-(MATE - 9), 4), 4) == -(MATE - 9)
+    assert score_to_tt(123, 7) == 123
+
+
+def test_tt_size_and_store() -> None:
+    tt = new_tt(1)
+    assert tt.keys.shape[0] == (1 << 20) // ENTRY_BYTES
+    key = np.uint64(0x1234_5678_9ABC_DEF1)
+    tt_store(tt, key, 777, 50, 0, 6, BOUND_LOWER, 0)
+    i = tt_index(tt, key)
+    assert (tt.keys[i], tt.moves[i], tt.scores[i], tt.depths[i]) == (key, 777, 50, 6)
+    # A shallower bound for the same position keeps the deeper entry...
+    tt_store(tt, key, 0, 10, 0, 2, BOUND_UPPER, 0)
+    assert tt.depths[i] == 6
+    # ...but a different position always takes the slot.
+    other = key ^ np.uint64(1 << 40)
+    tt_store(tt, other, 0, -5, 0, 1, BOUND_UPPER, 0)
+    assert tt.keys[i] == other
+    clear_tt(tt)
+    assert not tt.keys.any()
+
+
+def test_new_game_clears_the_table() -> None:
+    searcher = Searcher(hash_mb=1)
+    searcher.search(Board(KIWIPETE), Limits(depth=4))
+    assert searcher.tt.keys.any()
+    searcher.new_game()
+    assert not searcher.tt.keys.any()
+
+
+def test_table_reuse_saves_nodes_on_the_next_search() -> None:
+    searcher = Searcher(hash_mb=1)
+    first = searcher.search(Board(KIWIPETE), Limits(depth=5))
+    again = searcher.search(Board(KIWIPETE), Limits(depth=5))
+    assert again.best_move == first.best_move
+    assert again.nodes < first.nodes

@@ -23,6 +23,7 @@ from chessbot.search.negamax import (
     start_iteration,
     unwind,
 )
+from chessbot.search.tt import DEFAULT_HASH_MB, TransTable, clear_tt, new_search_generation, new_tt
 
 MAX_DEPTH = 100
 CHUNK_NODES = 2048
@@ -109,10 +110,19 @@ InfoCallback = Callable[[SearchInfo], None]
 
 
 class Searcher:
-    def __init__(self, ev: EvalTables | None = None) -> None:
+    def __init__(self, ev: EvalTables | None = None, hash_mb: int = DEFAULT_HASH_MB) -> None:
         self.ev = ev if ev is not None else eval_tables()
         self.ss: SearchStack = new_stack()
+        self.tt: TransTable = new_tt(hash_mb)
         self.overhead_ms = 50
+
+    def resize_hash(self, mb: int) -> None:
+        self.tt = new_tt(mb)
+
+    def new_game(self) -> None:
+        """Forget everything learned in earlier searches (``ucinewgame``)."""
+        clear_tt(self.tt)
+        self.ss = new_stack()
 
     def search(
         self,
@@ -133,7 +143,8 @@ class Searcher:
         if not legal:
             return SearchResult(0, 0, 0, 0, 0.0, [])
 
-        ss, pos, t, ev = self.ss, board.pos, board.t, self.ev
+        ss, pos, t, ev, tt = self.ss, board.pos, board.t, self.ev, self.tt
+        new_search_generation(tt)
         ss.sc[SC_NODES] = 0
         ss.sc[SC_PREV_PV_LEN] = 0
         result = SearchResult(legal[0], 0, 0, 0, 0.0, [legal[0]])
@@ -151,7 +162,7 @@ class Searcher:
                     if chunk <= 0:
                         aborted = True
                         break
-                if run(pos, t, ev, ss, chunk):
+                if run(pos, t, ev, ss, tt, chunk):
                     break
                 if stop is not None and stop.is_set():
                     aborted = True
@@ -201,5 +212,5 @@ class Searcher:
 def warmup_search() -> None:
     """Compile (or load from the cache) the search entry points with a tiny search."""
     board = Board("r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3")
-    Searcher().search(board, Limits(depth=3))
-    Searcher().search(board, Limits(nodes=100))
+    Searcher(hash_mb=1).search(board, Limits(depth=3))
+    Searcher(hash_mb=1).search(board, Limits(nodes=100))
