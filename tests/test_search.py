@@ -12,7 +12,7 @@ from chessbot.core import Board
 from chessbot.core.position import START_FEN, move_to_uci
 from chessbot.search import Limits, Searcher, SearchInfo, warmup
 from chessbot.search.evaluate import eval_tables, evaluate, insufficient_material
-from chessbot.search.negamax import MATE, is_repetition
+from chessbot.search.negamax import MATE, MATE_BOUND, is_repetition
 from chessbot.search.searcher import plan_time
 from chessbot.search.see import SEE_BUFFER, see
 from chessbot.search.tt import (
@@ -287,3 +287,11 @@ def test_aspiration_windows_report_only_completed_iterations() -> None:
     assert [i.depth for i in infos] == list(range(1, 8))
     assert result.best_move == infos[-1].pv[0]
     assert result.score == infos[-1].score
+
+
+def test_check_extension_finds_a_mate_beyond_the_nominal_depth() -> None:
+    # WAC.035: 1.Rxh7+ Kxh7 2.Qh5+ Kg8 3.Qf7+ and mate in 4, a line of checks seven plies
+    # long. Without the extension a depth-3 search scores it as about +1.5.
+    move, score, _ = search("r3r2k/2R3pp/pp1q1p2/8/3P3R/7P/PP3PP1/3Q2K1 w - - 0 1", depth=3)
+    assert move == "h4h7"
+    assert score > MATE_BOUND

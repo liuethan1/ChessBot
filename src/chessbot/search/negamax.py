@@ -9,6 +9,9 @@ tree, and the next call carries on. The Python driver uses this to read the cloc
 A frame whose remaining depth is 0 or less is a quiescence node: stand pat, then captures and
 queen promotions only (or every evasion when in check).
 
+A side in check at a full-width frame is searched one ply deeper (check extension), as long as the
+frame is within twice the iteration depth of the root.
+
 Moves after the first are searched with a null window around alpha (principal variation search);
 a move that lands strictly inside the frame's window is searched again with the full window. The
 re-search is a stage of the parent frame (``SearchStack.zw``), so it needs no recursion either.
@@ -272,7 +275,11 @@ def _enter(
     if p >= MAX_SEARCH_PLY - 1:
         return True, evaluate(pos, ev)
     ss.alpha0[p] = ss.alpha[p]
+    check = in_check(pos, t)
     depth = ss.depth[p]
+    if check and depth >= 0 and 0 < p < 2 * ss.depth[0]:
+        depth += 1
+        ss.depth[p] = depth
     key = pos.keys[st[ST_PLY]]
     ti = tt_index(tt, key)
     tt_move = 0
@@ -288,7 +295,6 @@ def _enter(
             if bound == BOUND_UPPER and score <= ss.alpha[p]:
                 return True, score
     moves = ss.moves[p]
-    check = in_check(pos, t)
     if depth <= 0 and not check:
         stand = evaluate(pos, ev)
         if stand >= ss.beta[p]:
