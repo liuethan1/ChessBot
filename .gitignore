@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Downloaded books, suites, binaries, and match output (chessbot-fetch)
+external/
+
+# fastchess autosave
+config.json

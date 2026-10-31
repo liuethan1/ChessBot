@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "chessbot"
+version = "0.0.1"
+description = "A UCI chess engine in Python (numba/numpy accelerated) with an NNUE evaluation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "numba>=0.59",
+]
+
+[project.optional-dependencies]
+tools = [
+    "chess>=1.10",
+]
+dev = [
+    "chessbot[tools]",
+    "mypy>=1.10",
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+chessbot-perft = "chessbot.tools.perft:main"
+chessbot-bench = "chessbot.tools.bench:main"
+chessbot-suite = "chessbot.tools.suite:main"
+chessbot-match = "chessbot.tools.match:main"
+chessbot-sprt = "chessbot.tools.sprt:main"
+chessbot-acpl = "chessbot.tools.acpl:main"
+chessbot-fetch = "chessbot.tools.fetch:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/chessbot"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PT", "N"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["numba", "numba.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers"]
+markers = [
+    "stockfish: needs a Stockfish binary (set STOCKFISH_PATH or put stockfish on PATH)",
+    "fastchess: needs a fastchess binary (set FASTCHESS_PATH or put fastchess on PATH)",
+    "slow: takes more than a few seconds",
+]
