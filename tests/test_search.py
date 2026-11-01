@@ -5,14 +5,27 @@ import time
 from typing import Any
 
 import chess
+import numpy as np
 import pytest
 
 from chessbot.core import Board
 from chessbot.core.position import START_FEN, move_to_uci
 from chessbot.search import Limits, Searcher, SearchInfo, warmup
 from chessbot.search.evaluate import eval_tables, evaluate, insufficient_material
-from chessbot.search.negamax import MATE, is_repetition
+from chessbot.search.negamax import MATE, MATE_BOUND, is_repetition
 from chessbot.search.searcher import plan_time
+from chessbot.search.see import SEE_BUFFER, see
+from chessbot.search.tt import (
+    BOUND_LOWER,
+    BOUND_UPPER,
+    ENTRY_BYTES,
+    clear_tt,
+    new_tt,
+    score_from_tt,
+    score_to_tt,
+    tt_index,
+    tt_store,
+)
 
 KIWIPETE = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1"
 EVAL_FENS = [
@@ -204,3 +217,81 @@ def test_time_plan() -> None:
     assert tiny.hard_ms is not None
     assert tiny.hard_ms >= 1
     assert plan_time(Limits(wtime=60_000, movestogo=2), True, 50).hard_ms is not None
+
+
+def test_tt_mate_scores_are_stored_relative_to_the_node() -> None:
+    mate_in_3_from_ply_5 = MATE - 10
+    stored = score_to_tt(mate_in_3_from_ply_5, 5)
+    assert stored == MATE - 5
+    assert score_from_tt(stored, 2) == MATE - 7
+    assert score_from_tt(score_to_tt(-(MATE - 9), 4), 4) == -(MATE - 9)
+    assert score_to_tt(123, 7) == 123
+
+
+def test_tt_size_and_store() -> None:
+    tt = new_tt(1)
+    assert tt.keys.shape[0] == (1 << 20) // ENTRY_BYTES
+    key = np.uint64(0x1234_5678_9ABC_DEF1)
+    tt_store(tt, key, 777, 50, 0, 6, BOUND_LOWER, 0)
+    i = tt_index(tt, key)
+    assert (tt.keys[i], tt.moves[i], tt.scores[i], tt.depths[i]) == (key, 777, 50, 6)
+    # A shallower bound for the same position keeps the deeper entry...
+    tt_store(tt, key, 0, 10, 0, 2, BOUND_UPPER, 0)
+    assert tt.depths[i] == 6
+    # ...but a different position always takes the slot.
+    other = key ^ np.uint64(1 << 40)
+    tt_store(tt, other, 0, -5, 0, 1, BOUND_UPPER, 0)
+    assert tt.keys[i] == other
+    clear_tt(tt)
+    assert not tt.keys.any()
+
+
+def test_new_game_clears_the_table() -> None:
+    searcher = Searcher(hash_mb=1)
+    searcher.search(Board(KIWIPETE), Limits(depth=4))
+    assert searcher.tt.keys.any()
+    searcher.new_game()
+    assert not searcher.tt.keys.any()
+
+
+def test_table_reuse_saves_nodes_on_the_next_search() -> None:
+    searcher = Searcher(hash_mb=1)
+    first = searcher.search(Board(KIWIPETE), Limits(depth=5))
+    again = searcher.search(Board(KIWIPETE), Limits(depth=5))
+    assert again.best_move == first.best_move
+    assert again.nodes < first.nodes
+
+
+@pytest.mark.parametrize(
+    ("fen", "uci", "value"),
+    [
+        ("1k1r4/1pp4p/p7/4p3/8/P5P1/1PP4P/2K1R3 w - - 0 1", "e1e5", 100),
+        ("1k1r3q/1ppn3p/p4b2/4p3/8/P2N2P1/1PP1R1BP/2K1Q3 w - - 0 1", "d3e5", -220),
+        ("4k3/8/2p5/3p4/4P3/8/8/4K3 w - - 0 1", "e4d5", 0),
+        ("4k3/8/2p5/3p4/8/8/3Q4/4K3 w - - 0 1", "d2d5", -800),
+        ("4k3/1P6/8/8/8/8/8/4K3 w - - 0 1", "b7b8q", 800),
+        ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6", 100),
+    ],
+)
+def test_static_exchange_evaluation(fen: str, uci: str, value: int) -> None:
+    board = Board(fen)
+    move = next(m for m in board.legal_moves() if move_to_uci(m) == uci)
+    assert see(board.pos, board.t, move, np.zeros(SEE_BUFFER, np.int32)) == value
+
+
+def test_aspiration_windows_report_only_completed_iterations() -> None:
+    # From depth 4 each iteration starts with a narrow window; whatever re-searches that needs,
+    # every reported depth must come with a PV and the result must match the last report.
+    infos: list[SearchInfo] = []
+    result = Searcher().search(Board(KIWIPETE), Limits(depth=7), on_info=infos.append)
+    assert [i.depth for i in infos] == list(range(1, 8))
+    assert result.best_move == infos[-1].pv[0]
+    assert result.score == infos[-1].score
+
+
+def test_check_extension_finds_a_mate_beyond_the_nominal_depth() -> None:
+    # WAC.035: 1.Rxh7+ Kxh7 2.Qh5+ Kg8 3.Qf7+ and mate in 4, a line of checks seven plies
+    # long. Without the extension a depth-3 search scores it as about +1.5.
+    move, score, _ = search("r3r2k/2R3pp/pp1q1p2/8/3P3R/7P/PP3PP1/3Q2K1 w - - 0 1", depth=3)
+    assert move == "h4h7"
+    assert score > MATE_BOUND

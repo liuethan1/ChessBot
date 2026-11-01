@@ -14,7 +14,7 @@ from chessbot.search import SearchInfo
 from chessbot.search.negamax import MATE
 from chessbot.tools.bench import run_bench
 from chessbot.tools.perft import UciBackend
-from chessbot.uci import UciEngine, format_info, parse_go
+from chessbot.uci import UciEngine, format_info, main, parse_go
 
 ENGINE = [sys.executable, "-m", "chessbot"]
 
@@ -35,6 +35,33 @@ def test_handshake_and_options() -> None:
     assert lines[-1] == "readyok"
     assert any("UCI_Elo" in line for line in lines)
     assert any("Move Overhead" in line for line in lines)
+    assert any(line.startswith("option name Hash type spin") for line in lines)
+
+
+def test_hash_option_resizes_the_table() -> None:
+    out = io.StringIO()
+    engine = UciEngine(out)
+    for line in ("isready", "setoption name Hash value 2"):
+        engine.handle(line)
+    assert engine.searcher is not None
+    assert engine.searcher.tt.keys.nbytes == (2 << 20) // 2
+
+
+def test_command_line_runs_one_command() -> None:
+    out = io.StringIO()
+    assert main(stdin=io.StringIO("go depth 1\n"), stdout=out, argv=["bench", "2"]) == 0
+    lines = out.getvalue().splitlines()
+    assert any(line.startswith("Nodes searched") for line in lines)
+    assert not any(line.startswith("bestmove") for line in lines)
+
+
+def test_bench_command_is_deterministic() -> None:
+    first = run_commands("isready", "bench 3")
+    second = run_commands("isready", "bench 3")
+    nodes = [line for line in first if line.startswith("Nodes searched")]
+    assert len(nodes) == 1
+    assert int(nodes[0].split(":")[1]) > 0
+    assert nodes == [line for line in second if line.startswith("Nodes searched")]
 
 
 def test_parse_go() -> None:
