@@ -309,3 +309,9 @@ def test_null_move_still_finds_a_quiet_win() -> None:
     move, score, _ = search("4k3/8/8/8/8/8/4Q3/4K3 w - - 0 1", depth=6)
     assert move[0] == "e"
     assert score > 800
+
+
+def test_reverse_futility_still_takes_a_hanging_queen() -> None:
+    move, score, _ = search("4k3/8/8/3q4/8/8/3R4/4K3 w - - 0 1", depth=5)
+    assert move == "d2d5"
+    assert score > 300

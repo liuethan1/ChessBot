@@ -21,6 +21,9 @@ a piece besides king and pawns, and whose static eval is already at least beta m
 and search the reply at a reduced depth. A fail high prunes the node. Consecutive null moves are
 not allowed, and pawn endings are skipped so zugzwang is not mistaken for a cutoff.
 
+Reverse futility pruning returns the static eval at a non-PV node whose eval is already at least
+beta plus a margin that grows with remaining depth.
+
 Every completed frame is stored in the transposition table, and non-PV frames (null window) return
 straight from a table entry that is deep enough and whose bound proves the result. The table move
 is searched first.
@@ -84,6 +87,9 @@ CHILD_FULL, CHILD_PVS, CHILD_NMP = 0, 1, 2
 
 NMP_MIN_DEPTH = 3
 """Null-move pruning is not tried at remaining depths below this."""
+RFP_MAX_DEPTH = 8
+RFP_MARGIN = 80
+"""Reverse futility: a non-PV node with eval - 80*depth already above beta is a cutoff."""
 
 PV_SCORE = 2_000_000
 CAPTURE_SCORE = 1_000_000
@@ -385,6 +391,15 @@ def _enter(
         stand = 0 if check else evaluate(pos, ev)
         ss.static_eval[p] = stand
         ss.best[p] = -INF
+        if (
+            p > 0
+            and not check
+            and 0 < depth <= RFP_MAX_DEPTH
+            and ss.beta[p] - ss.alpha[p] == 1
+            and abs(ss.beta[p]) < MATE_BOUND
+            and stand - RFP_MARGIN * depth >= ss.beta[p]
+        ):
+            return True, stand
         if _can_null_move(pos, ss, p, check, depth, stand):
             ss.flags[p] |= FLAG_NMP
     _score_moves(pos, t, ss, p, n, tt_move)
