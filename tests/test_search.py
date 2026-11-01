@@ -6,12 +6,28 @@ from typing import Any
 
 import chess
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from chessbot.core import Board
 from chessbot.core.position import START_FEN, move_to_uci
 from chessbot.search import Limits, Searcher, SearchInfo, warmup
-from chessbot.search.evaluate import eval_tables, evaluate, insufficient_material
+from chessbot.search.evaluate import (
+    I_BISHOP_PAIR,
+    I_ISOLATED,
+    I_PASSED,
+    I_ROOK_OPEN,
+    I_TEMPO,
+    N_TERMS,
+    W_EG,
+    W_MG,
+    EvalTables,
+    build_eval_tables,
+    eval_components,
+    eval_tables,
+    evaluate,
+    insufficient_material,
+)
 from chessbot.search.negamax import MATE, MATE_BOUND, is_repetition
 from chessbot.search.searcher import plan_time
 from chessbot.search.see import SEE_BUFFER, see
@@ -37,8 +53,16 @@ EVAL_FENS = [
 ]
 
 
-def ev(fen: str) -> int:
-    return int(evaluate(Board(fen).pos, eval_tables()))
+def ev(fen: str, tables: EvalTables | None = None) -> int:
+    board = Board(fen)
+    return int(evaluate(board.pos, board.t, tables or eval_tables()))
+
+
+def features(fen: str) -> npt.NDArray[np.int32]:
+    board = Board(fen)
+    feat = np.zeros(N_TERMS, np.int32)
+    eval_components(board.pos, board.t, eval_tables(), feat)
+    return feat
 
 
 def search(fen: str, **limits: Any) -> tuple[str, int, Board]:
@@ -48,7 +72,12 @@ def search(fen: str, **limits: Any) -> tuple[str, int, Board]:
 
 
 def test_start_position_is_balanced() -> None:
-    assert ev(START_FEN) == 0
+    # Extra terms cancel; only the side-to-move tempo remains.
+    phase = 24
+    tempo = (W_MG[I_TEMPO] * phase + W_EG[I_TEMPO] * (24 - phase)) // 24
+    assert ev(START_FEN) == tempo
+    zeros = build_eval_tables(np.zeros(N_TERMS, np.int32), np.zeros(N_TERMS, np.int32))
+    assert ev(START_FEN, zeros) == 0
 
 
 @pytest.mark.parametrize("fen", EVAL_FENS)
@@ -59,14 +88,49 @@ def test_eval_is_colour_symmetric(fen: str) -> None:
 
 def test_eval_is_from_the_side_to_moves_view() -> None:
     white_up_queen = "4k3/8/8/8/8/8/8/3QK3 w - - 0 1"
-    assert ev(white_up_queen) > 900
-    assert ev(white_up_queen.replace(" w ", " b ")) == -ev(white_up_queen)
+    white = ev(white_up_queen)
+    black = ev(white_up_queen.replace(" w ", " b "))
+    assert white > 900
+    # Tempo is always from the side to move, so flipping the side is not a pure negation.
+    phase = 4  # one queen
+    tempo = (W_MG[I_TEMPO] * phase + W_EG[I_TEMPO] * (24 - phase)) // 24
+    assert black == -white + 2 * tempo
 
 
 def test_eval_tapers_towards_the_endgame_tables() -> None:
     # A lone advanced pawn is worth far more in the endgame table (178 + 94) than in the
     # middlegame one (98 + 82); with no other material the phase is 0, so the endgame value wins.
     assert ev("4k3/P7/8/8/8/8/8/4K3 w - - 0 1") - ev("4k3/8/8/8/8/8/8/4K3 w - - 0 1") > 250
+
+
+def test_bishop_pair_isolated_passed_and_open_file_features() -> None:
+    assert features("4k3/8/8/8/8/8/8/2B1KB2 w - - 0 1")[I_BISHOP_PAIR] == 1
+    assert features("4k3/8/8/8/8/8/8/2B1KB2 b - - 0 1")[I_BISHOP_PAIR] == 1
+    assert features("4k3/8/8/8/8/8/P7/4K3 w - - 0 1")[I_ISOLATED] == 1
+    assert features("4k3/8/8/8/8/8/P7/4K3 w - - 0 1")[I_PASSED] == 1
+    assert features("4k3/8/8/8/8/8/8/R3K3 w - - 0 1")[I_ROOK_OPEN] == 1
+    assert features(START_FEN)[I_BISHOP_PAIR] == 0
+
+
+def test_evaluate_matches_weighted_features() -> None:
+    board = Board(KIWIPETE)
+    tables = eval_tables()
+    feat = np.zeros(N_TERMS, np.int32)
+    mg, eg, phase = eval_components(board.pos, board.t, tables, feat)
+    extra_mg = extra_eg = 0
+    for i in range(N_TERMS):
+        if i == I_TEMPO:
+            continue
+        extra_mg += int(tables.w_mg[i]) * int(feat[i])
+        extra_eg += int(tables.w_eg[i]) * int(feat[i])
+    phase = min(phase, 24)
+    blend = (mg + extra_mg) * phase + (eg + extra_eg) * (24 - phase)
+    score = blend // 24 if blend >= 0 else -(-blend // 24)
+    if not board.white_to_move:
+        score = -score
+    tblend = int(tables.w_mg[I_TEMPO]) * phase + int(tables.w_eg[I_TEMPO]) * (24 - phase)
+    tempo = tblend // 24 if tblend >= 0 else -(-tblend // 24)
+    assert evaluate(board.pos, board.t, tables) == score + tempo
 
 
 @pytest.mark.parametrize(

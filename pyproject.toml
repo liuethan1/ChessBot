@@ -34,6 +34,7 @@ chessbot-sprt = "chessbot.tools.sprt:main"
 chessbot-acpl = "chessbot.tools.acpl:main"
 chessbot-fetch = "chessbot.tools.fetch:main"
 chessbot-warmup = "chessbot.tools.warmup:main"
+chessbot-texel = "chessbot.tools.texel:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chessbot"]

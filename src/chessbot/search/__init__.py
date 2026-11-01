@@ -1,4 +1,4 @@
-"""Search and evaluation: iterative deepening alpha-beta with quiescence and PeSTO."""
+"""Search and evaluation: iterative deepening alpha-beta with quiescence and Texel-tuned HCE."""
 
 from __future__ import annotations
 
