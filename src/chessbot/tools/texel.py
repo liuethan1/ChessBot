@@ -46,11 +46,11 @@ def _taper_vec(
     ph = np.clip(phase, 0, MAX_PHASE)
     mg = pst_mg + feat @ w_mg
     eg = pst_eg + feat @ w_eg
-    return (mg * ph + eg * (MAX_PHASE - ph)) / MAX_PHASE  # type: ignore[no-any-return]
+    return (mg * ph + eg * (MAX_PHASE - ph)) / MAX_PHASE
 
 
 def sigmoid(score: npt.NDArray[np.float64], k: float) -> npt.NDArray[np.float64]:
-    return 1.0 / (1.0 + np.exp(-score / k))  # type: ignore[no-any-return]
+    return 1.0 / (1.0 + np.exp(-score / k))
 
 
 def mse(
@@ -213,7 +213,14 @@ def format_weights(
 def _cmd_extract(args: argparse.Namespace) -> int:
     data = extract_pgns([Path(p) for p in args.pgn], args.min_ply, args.max_positions)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(args.output, **data)
+    np.savez_compressed(
+        args.output,
+        feat=data["feat"],
+        pst_mg=data["pst_mg"],
+        pst_eg=data["pst_eg"],
+        phase=data["phase"],
+        result=data["result"],
+    )
     print(f"wrote {data['result'].shape[0]} positions to {args.output}", flush=True)
     return 0
 
