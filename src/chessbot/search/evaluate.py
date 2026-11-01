@@ -1,8 +1,13 @@
-"""PeSTO tapered evaluation (Ronald Friederich's piece-square tables, as published on the CPW).
+"""Tapered evaluation: PeSTO piece-square tables plus Texel-tuned hand-crafted terms.
 
-The tables below are written from White's point of view with a8 first, as on the CPW. They are
-folded into one middlegame and one endgame table indexed by ``[piece code, square]`` (our squares
-run a1 = 0 ... h8 = 63), with the material values included.
+The PeSTO tables are Ronald Friederich's, as published on the CPW, written from White's point of
+view with a8 first. They are folded into one middlegame and one endgame table indexed by
+``[piece code, square]`` (our squares run a1 = 0 ... h8 = 63), with the material values included.
+
+On top of that, :func:`evaluate` adds bishop pair, pawn-structure, mobility, rook-file, outpost,
+and king-safety terms. Those weights start from literature values and are then Texel-tuned
+(``chessbot-texel``) on quiet positions labelled with game results. The search still sees a
+single tapered centipawn score from the side to move.
 """
 
 from __future__ import annotations
@@ -14,17 +19,34 @@ import numpy.typing as npt
 
 from chessbot.core.bitboard import (
     BISHOP,
+    BLACK,
+    FULL,
+    KING,
+    KING_ATT,
     KNIGHT,
+    KNIGHT_ATT,
     ONE,
     PAWN,
     QUEEN,
     ROOK,
+    U64,
     WHITE,
+    WHITE_OCC,
+    ZERO,
+    Tables,
+    bishop_attacks,
+    bit,
     lsb,
     popcount,
+    rook_attacks,
 )
 from chessbot.core.jit import njit
 from chessbot.core.position import ST_SIDE, Position
+
+FILE_A = U64(0x0101010101010101)
+FILE_H = U64(0x8080808080808080)
+NOT_A = FULL ^ FILE_A
+NOT_H = FULL ^ FILE_H
 
 MG_VALUE = (82, 337, 365, 477, 1025, 0)
 EG_VALUE = (94, 281, 297, 512, 936, 0)
@@ -135,6 +157,122 @@ EG_PST = (
 )
 # fmt: on
 
+# Extra-term indices. Passed-pawn ranks 1-7 occupy I_PASSED .. I_PASSED + 6.
+I_BISHOP_PAIR = 0
+I_DOUBLED = 1
+I_ISOLATED = 2
+I_SUPPORTED = 3
+I_PHALANX = 4
+I_PASSED = 5
+N_PASSED = 7
+I_ROOK_OPEN = 12
+I_ROOK_SEMI = 13
+I_ROOK_SEVENTH = 14
+I_KNIGHT_MOB = 15
+I_BISHOP_MOB = 16
+I_ROOK_MOB = 17
+I_QUEEN_MOB = 18
+I_KING_SHELTER = 19
+I_KING_STORM = 20
+I_KING_ATTACK = 21
+I_KNIGHT_OUTPOST = 22
+I_BISHOP_OUTPOST = 23
+I_PAWN_ISLANDS = 24
+I_TEMPO = 25
+N_TERMS = 26
+
+TERM_NAMES = (
+    "bishop_pair",
+    "doubled",
+    "isolated",
+    "supported",
+    "phalanx",
+    "passed_1",
+    "passed_2",
+    "passed_3",
+    "passed_4",
+    "passed_5",
+    "passed_6",
+    "passed_7",
+    "rook_open",
+    "rook_semi",
+    "rook_seventh",
+    "knight_mob",
+    "bishop_mob",
+    "rook_mob",
+    "queen_mob",
+    "king_shelter",
+    "king_storm",
+    "king_attack",
+    "knight_outpost",
+    "bishop_outpost",
+    "pawn_islands",
+    "tempo",
+)
+
+# Texel-tuned extra-term weights (quiet WDL from Phase 4 games). Passed pawns, rook on
+# the 7th, king storm, and king attack stay at literature values: the quiet set never
+# sees a 7th-rank passer, and PeSTO's pawn/king tables already overlap those terms.
+W_MG = (
+    20,
+    -23,
+    -11,
+    16,
+    8,
+    0,
+    8,
+    16,
+    32,
+    56,
+    88,
+    130,
+    16,
+    4,
+    18,
+    1,
+    3,
+    1,
+    1,
+    12,
+    -6,
+    1,
+    8,
+    6,
+    0,
+    8,
+)
+W_EG = (
+    40,
+    -23,
+    -5,
+    0,
+    0,
+    4,
+    12,
+    24,
+    48,
+    80,
+    120,
+    180,
+    4,
+    20,
+    28,
+    3,
+    1,
+    0,
+    3,
+    0,
+    -2,
+    0,
+    15,
+    16,
+    0,
+    6,
+)
+ATTACK_W = (0, 2, 2, 3, 5, 0)
+
+assert len(TERM_NAMES) == N_TERMS == len(W_MG) == len(W_EG)
+
 
 class EvalTables(NamedTuple):
     mg: npt.NDArray[np.int32]
@@ -142,9 +280,81 @@ class EvalTables(NamedTuple):
     eg: npt.NDArray[np.int32]
     phase: npt.NDArray[np.int32]
     """(12,): game-phase weight of each piece code."""
+    w_mg: npt.NDArray[np.int32]
+    """(N_TERMS,): extra-term middlegame weights in centipawns."""
+    w_eg: npt.NDArray[np.int32]
+    attack_w: npt.NDArray[np.int32]
+    """(6,): king-attack units for P,N,B,R,Q,K."""
+    file_bb: npt.NDArray[np.uint64]
+    isolated: npt.NDArray[np.uint64]
+    """(64,): adjacent files of each square, for isolated-pawn detection."""
+    passed: npt.NDArray[np.uint64]
+    """(2, 64): squares in front on this and neighbouring files (white, black)."""
+    forward: npt.NDArray[np.uint64]
+    """(2, 64): squares ahead on the same file."""
+    shelter: npt.NDArray[np.uint64]
+    """(2, 64): two ranks in front on this and neighbouring files."""
+    scratch: npt.NDArray[np.int32]
+    """(N_TERMS,): scratch features for the single-threaded evaluator."""
 
 
-def build_eval_tables() -> EvalTables:
+def _build_masks() -> tuple[
+    npt.NDArray[np.uint64],
+    npt.NDArray[np.uint64],
+    npt.NDArray[np.uint64],
+    npt.NDArray[np.uint64],
+    npt.NDArray[np.uint64],
+]:
+    file_bb = np.zeros(8, np.uint64)
+    file_a = np.uint64(0x0101010101010101)
+    for f in range(8):
+        file_bb[f] = file_a << np.uint64(f)
+    isolated = np.zeros(64, np.uint64)
+    passed = np.zeros((2, 64), np.uint64)
+    forward = np.zeros((2, 64), np.uint64)
+    shelter = np.zeros((2, 64), np.uint64)
+    one = np.uint64(1)
+    for sq in range(64):
+        f, r = sq % 8, sq // 8
+        iso = np.uint64(0)
+        if f > 0:
+            iso |= file_bb[f - 1]
+        if f < 7:
+            iso |= file_bb[f + 1]
+        isolated[sq] = iso
+        pw = pb = fw = fb = sw = sb = np.uint64(0)
+        for rr in range(r + 1, 8):
+            fw |= one << np.uint64(rr * 8 + f)
+            for ff in range(max(0, f - 1), min(8, f + 2)):
+                pw |= one << np.uint64(rr * 8 + ff)
+        for rr in range(r):
+            fb |= one << np.uint64(rr * 8 + f)
+            for ff in range(max(0, f - 1), min(8, f + 2)):
+                pb |= one << np.uint64(rr * 8 + ff)
+        for df in (-1, 0, 1):
+            ff = f + df
+            if not 0 <= ff < 8:
+                continue
+            for dr in (1, 2):
+                rr = r + dr
+                if rr < 8:
+                    sw |= one << np.uint64(rr * 8 + ff)
+                rr = r - dr
+                if rr >= 0:
+                    sb |= one << np.uint64(rr * 8 + ff)
+        passed[WHITE, sq] = pw
+        passed[BLACK, sq] = pb
+        forward[WHITE, sq] = fw
+        forward[BLACK, sq] = fb
+        shelter[WHITE, sq] = sw
+        shelter[BLACK, sq] = sb
+    return file_bb, isolated, passed, forward, shelter
+
+
+def build_eval_tables(
+    w_mg: tuple[int, ...] | npt.NDArray[np.int32] | None = None,
+    w_eg: tuple[int, ...] | npt.NDArray[np.int32] | None = None,
+) -> EvalTables:
     mg = np.zeros((12, 64), np.int32)
     eg = np.zeros((12, 64), np.int32)
     phase = np.zeros(12, np.int32)
@@ -156,7 +366,21 @@ def build_eval_tables() -> EvalTables:
             mg[6 + p, sq] = MG_VALUE[p] + MG_PST[p][sq]
             eg[6 + p, sq] = EG_VALUE[p] + EG_PST[p][sq]
         phase[p] = phase[6 + p] = PHASE_INC[p]
-    return EvalTables(mg, eg, phase)
+    file_bb, isolated, passed, forward, shelter = _build_masks()
+    return EvalTables(
+        mg,
+        eg,
+        phase,
+        np.array(W_MG if w_mg is None else w_mg, np.int32),
+        np.array(W_EG if w_eg is None else w_eg, np.int32),
+        np.array(ATTACK_W, np.int32),
+        file_bb,
+        isolated,
+        passed,
+        forward,
+        shelter,
+        np.zeros(N_TERMS, np.int32),
+    )
 
 
 _EVAL_TABLES: EvalTables | None = None
@@ -170,26 +394,202 @@ def eval_tables() -> EvalTables:
 
 
 @njit
-def evaluate(pos: Position, ev: EvalTables) -> int:
-    """Static evaluation in centipawns from the side to move's point of view."""
+def _pawn_attacks(pawns: np.uint64, color: int) -> np.uint64:
+    if color == WHITE:
+        return ((pawns & NOT_A) << U64(7)) | ((pawns & NOT_H) << U64(9))
+    return ((pawns & NOT_H) >> U64(7)) | ((pawns & NOT_A) >> U64(9))
+
+
+@njit
+def _islands(pawns: np.uint64, file_bb: npt.NDArray[np.uint64]) -> int:
+    n = 0
+    prev = 0
+    for f in range(8):
+        occ = 1 if (pawns & file_bb[f]) != ZERO else 0
+        if occ and not prev:
+            n += 1
+        prev = occ
+    return n
+
+
+@njit
+def _piece_attacks(t: Tables, pt: int, sq: int, occ: np.uint64) -> np.uint64:
+    if pt == KNIGHT:
+        return t.leaper[KNIGHT_ATT, sq]  # type: ignore[no-any-return]
+    if pt == KING:
+        return t.leaper[KING_ATT, sq]  # type: ignore[no-any-return]
+    if pt == BISHOP:
+        return bishop_attacks(t, sq, occ)
+    if pt == ROOK:
+        return rook_attacks(t, sq, occ)
+    if pt == QUEEN:
+        return bishop_attacks(t, sq, occ) | rook_attacks(t, sq, occ)
+    return ZERO
+
+
+@njit
+def eval_components(
+    pos: Position, t: Tables, ev: EvalTables, feat: npt.NDArray[np.int32]
+) -> tuple[int, int, int]:
+    """Fill ``feat`` with white-minus-black extra terms; return PeSTO (mg, eg, phase)."""
+    for i in range(N_TERMS):
+        feat[i] = 0
+    bb = pos.bb
+    occ = bb[WHITE_OCC] | bb[WHITE_OCC + 1]
+    wp, bp = bb[PAWN], bb[6 + PAWN]
+    own_w, own_b = bb[WHITE_OCC], bb[WHITE_OCC + 1]
+    w_att = _pawn_attacks(wp, WHITE)
+    b_att = _pawn_attacks(bp, BLACK)
+    wking = lsb(bb[KING])
+    bking = lsb(bb[6 + KING])
+    zone_w = t.leaper[KING_ATT, wking] | bit(wking)
+    zone_b = t.leaper[KING_ATT, bking] | bit(bking)
+    units_w = 0
+    units_b = 0
+
+    pawns_w = wp
+    while pawns_w:
+        sq = lsb(pawns_w)
+        pawns_w &= pawns_w - ONE
+        r = sq >> 3
+        if (ev.forward[WHITE, sq] & wp) != ZERO:
+            feat[I_DOUBLED] += 1
+        if (ev.isolated[sq] & wp) == ZERO:
+            feat[I_ISOLATED] += 1
+        if (ev.passed[WHITE, sq] & bp) == ZERO and 1 <= r <= 7:
+            feat[I_PASSED + r - 1] += 1
+        if (w_att & bit(sq)) != ZERO:
+            feat[I_SUPPORTED] += 1
+        if (sq & 7) < 7 and (wp & bit(sq + 1)) != ZERO:
+            feat[I_PHALANX] += 1
+        if (t.leaper[WHITE, sq] & zone_b) != ZERO:
+            units_b += 1
+
+    pawns_b = bp
+    while pawns_b:
+        sq = lsb(pawns_b)
+        pawns_b &= pawns_b - ONE
+        r = sq >> 3
+        rel = 7 - r
+        if (ev.forward[BLACK, sq] & bp) != ZERO:
+            feat[I_DOUBLED] -= 1
+        if (ev.isolated[sq] & bp) == ZERO:
+            feat[I_ISOLATED] -= 1
+        if (ev.passed[BLACK, sq] & wp) == ZERO and 1 <= rel <= 7:
+            feat[I_PASSED + rel - 1] -= 1
+        if (b_att & bit(sq)) != ZERO:
+            feat[I_SUPPORTED] -= 1
+        if (sq & 7) < 7 and (bp & bit(sq + 1)) != ZERO:
+            feat[I_PHALANX] -= 1
+        if (t.leaper[BLACK, sq] & zone_w) != ZERO:
+            units_w += 1
+
     mg = 0
     eg = 0
     phase = 0
     for pc in range(12):
-        b = pos.bb[pc]
-        sign = 1 if pc < 6 else -1
+        color = 0 if pc < 6 else 1
+        pt = pc - color * 6
+        sign = 1 if color == 0 else -1
+        own = own_w if color == 0 else own_b
+        enemy_pawn_att = b_att if color == 0 else w_att
+        own_pawn_att = w_att if color == 0 else b_att
+        zone_them = zone_b if color == 0 else zone_w
+        b = bb[pc]
         while b:
             sq = lsb(b)
             b &= b - ONE
             mg += sign * ev.mg[pc, sq]
             eg += sign * ev.eg[pc, sq]
             phase += ev.phase[pc]
+            if pt in (PAWN, KING):
+                continue
+            att = _piece_attacks(t, pt, sq, occ)
+            if (att & zone_them) != ZERO:
+                if color == 0:
+                    units_b += ev.attack_w[pt]
+                else:
+                    units_w += ev.attack_w[pt]
+            if pt == KNIGHT:
+                mob = popcount(att & ~own & ~enemy_pawn_att)
+                feat[I_KNIGHT_MOB] += sign * mob
+                rel = (sq >> 3) if color == 0 else 7 - (sq >> 3)
+                if (
+                    3 <= rel <= 5
+                    and (own_pawn_att & bit(sq)) != ZERO
+                    and (enemy_pawn_att & bit(sq)) == ZERO
+                ):
+                    feat[I_KNIGHT_OUTPOST] += sign
+            elif pt == BISHOP:
+                mob = popcount(att & ~own & ~enemy_pawn_att)
+                feat[I_BISHOP_MOB] += sign * mob
+                rel = (sq >> 3) if color == 0 else 7 - (sq >> 3)
+                if (
+                    3 <= rel <= 5
+                    and (own_pawn_att & bit(sq)) != ZERO
+                    and (enemy_pawn_att & bit(sq)) == ZERO
+                ):
+                    feat[I_BISHOP_OUTPOST] += sign
+            elif pt == ROOK:
+                feat[I_ROOK_MOB] += sign * popcount(att & ~own)
+                f = sq & 7
+                own_file = (wp if color == 0 else bp) & ev.file_bb[f]
+                opp_file = (bp if color == 0 else wp) & ev.file_bb[f]
+                if own_file == ZERO:
+                    if opp_file == ZERO:
+                        feat[I_ROOK_OPEN] += sign
+                    else:
+                        feat[I_ROOK_SEMI] += sign
+                rel = (sq >> 3) if color == 0 else 7 - (sq >> 3)
+                enemy_king_rank = (bking >> 3) if color == 0 else (wking >> 3)
+                back = 7 if color == 0 else 0
+                if rel == 6 and enemy_king_rank == back:
+                    feat[I_ROOK_SEVENTH] += sign
+            elif pt == QUEEN:
+                feat[I_QUEEN_MOB] += sign * popcount(att & ~own)
+
+    if popcount(bb[BISHOP]) >= 2:
+        feat[I_BISHOP_PAIR] += 1
+    if popcount(bb[6 + BISHOP]) >= 2:
+        feat[I_BISHOP_PAIR] -= 1
+
+    feat[I_PAWN_ISLANDS] = _islands(wp, ev.file_bb) - _islands(bp, ev.file_bb)
+    feat[I_KING_SHELTER] = popcount(wp & ev.shelter[WHITE, wking]) - popcount(
+        bp & ev.shelter[BLACK, bking]
+    )
+    feat[I_KING_STORM] = popcount(bp & ev.passed[WHITE, wking]) - popcount(
+        wp & ev.passed[BLACK, bking]
+    )
+    danger_w = units_w * (units_w + 1) // 2
+    danger_b = units_b * (units_b + 1) // 2
+    feat[I_KING_ATTACK] = danger_b - danger_w
+    return mg, eg, phase
+
+
+@njit
+def _taper(mg: int, eg: int, phase: int) -> int:
     if phase > MAX_PHASE:
         phase = MAX_PHASE
     blend = mg * phase + eg * (MAX_PHASE - phase)
-    # Round toward zero so that colour-mirrored positions get exactly opposite scores.
-    score = blend // MAX_PHASE if blend >= 0 else -(-blend // MAX_PHASE)
-    return score if pos.st[ST_SIDE] == WHITE else -score
+    return blend // MAX_PHASE if blend >= 0 else -(-blend // MAX_PHASE)
+
+
+@njit
+def evaluate(pos: Position, t: Tables, ev: EvalTables) -> int:
+    """Static evaluation in centipawns from the side to move's point of view."""
+    feat = ev.scratch
+    mg, eg, phase = eval_components(pos, t, ev, feat)
+    extra_mg = 0
+    extra_eg = 0
+    for i in range(N_TERMS):
+        if i == I_TEMPO:
+            continue
+        extra_mg += ev.w_mg[i] * feat[i]
+        extra_eg += ev.w_eg[i] * feat[i]
+    score = _taper(mg + extra_mg, eg + extra_eg, phase)
+    if pos.st[ST_SIDE] != WHITE:
+        score = -score
+    return score + _taper(int(ev.w_mg[I_TEMPO]), int(ev.w_eg[I_TEMPO]), phase)
 
 
 @njit

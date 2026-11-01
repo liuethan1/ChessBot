@@ -349,7 +349,7 @@ def _enter(
     if p > 0 and (st[ST_HALFMOVE] >= 100 or is_repetition(pos) or insufficient_material(pos)):
         return True, 0
     if p >= MAX_SEARCH_PLY - 1:
-        return True, evaluate(pos, ev)
+        return True, evaluate(pos, t, ev)
     ss.alpha0[p] = ss.alpha[p]
     if p > 0:
         md_alpha = -MATE + p
@@ -388,7 +388,7 @@ def _enter(
     moves = ss.moves[p]
     stand = 0
     if depth <= 0 and not check:
-        stand = evaluate(pos, ev)
+        stand = evaluate(pos, t, ev)
         ss.static_eval[p] = stand
         if stand >= ss.beta[p]:
             return True, stand
@@ -417,7 +417,7 @@ def _enter(
         n = generate_moves(pos, t, moves, False)
         if n == 0:
             return True, (p - MATE) if check else 0
-        stand = 0 if check else evaluate(pos, ev)
+        stand = 0 if check else evaluate(pos, t, ev)
         ss.static_eval[p] = stand
         ss.best[p] = -INF
         if (

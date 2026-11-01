@@ -8,7 +8,8 @@ The engine is built in phases (see the remake plan). Phase 0 adds the package sk
 measurement tooling used to judge every later change. Phase 1 adds the engine core in
 `chessbot.core`: numba-jitted bitboards with magic sliders, FEN I/O, Zobrist keys, make/unmake,
 and a legal move generator that passes both perft suites. Phase 2 makes it a playable UCI engine:
-`chessbot.search` adds iterative deepening alpha-beta with quiescence, a PeSTO tapered evaluation,
+`chessbot.search` adds iterative deepening alpha-beta with quiescence, a tapered evaluation
+(PeSTO piece-square tables plus Texel-tuned hand-crafted terms),
 MVV-LVA capture ordering, draw detection, and time management. Phase 3 adds a transposition table,
 SEE and history move ordering, principal variation search, aspiration windows, and check
 extensions. Phase 4 adds null-move pruning, reverse futility, futility, late-move reductions,
@@ -70,6 +71,14 @@ rule, and bare-minor endings score as draws.
 - **Internal iterative reductions**: a non-root node of remaining depth 4 or more with no
   transposition-table move is searched one ply shallower.
 
+Evaluation (`chessbot/search/evaluate.py`) is still a tapered centipawn score from the side to
+move. PeSTO supplies material and piece-square tables. Extra terms (bishop pair, doubled and
+isolated pawns, connected and passed pawns, mobility, rook files, outposts, pawn-island and
+king-safety terms, and a tempo bonus) are counted in numba from bitboards and attack tables —
+nothing in a jitted frame calls python-chess. Their weights are Texel-tuned with numpy
+(`chessbot-texel`) on quiet positions labelled with game results. `UCI_LimitStrength` / `UCI_Elo`
+are still no-ops; opening books and Syzygy tablebases are still later phases.
+
 Time management: with a clock, the target is `remaining / 30 + 0.75 * increment` (fewer moves if
 `movestogo` is smaller); no new iteration starts after 55% of the target, and the search is cut
 off mid-iteration at `min(4 * target, 0.3 * remaining + increment / 2)`. `Move Overhead` is
@@ -120,6 +129,7 @@ package manager (`apt install stockfish`) or set `STOCKFISH_PATH`.
 | `chessbot-acpl` | Average centipawn loss, blunders, and mistakes for each side of a PGN, using Stockfish |
 | `chessbot-warmup` | Times how long a fresh process takes to import and warm up the jitted core and search; `--check SECONDS` fails CI when the numba cache is not doing its job |
 | `chessbot-fetch` | Downloads pinned, checksummed books, suites, and the fastchess binary into `external/` |
+| `chessbot-texel` | Extract quiet labelled positions from PGNs and Texel-tune the extra evaluation weights |
 
 Examples:
 
