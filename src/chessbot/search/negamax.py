@@ -31,6 +31,7 @@ re-search at full depth if that fails high. The re-search is another parent-fram
 is not reduced, so a quiet mate at the horizon is still searched at full iteration depth.
 Late-move pruning drops later quiet non-checks at shallow non-PV nodes. Main-search SEE pruning
 skips later losing captures and hanging quiets; quiescence already dropped losing captures.
+Internal iterative reductions cut one ply at a node of depth 4 or more that has no table move.
 
 Every completed frame is stored in the transposition table, and non-PV frames (null window) return
 straight from a table entry that is deep enough and whose bound proves the result. The table move
@@ -113,6 +114,8 @@ SEE_PRUNE_MAX_DEPTH = 8
 SEE_CAPTURE_MARGIN = 100
 SEE_QUIET_MARGIN = 20
 """Main-search SEE: skip captures losing more than 100*depth and quiets hanging more than 20*d^2."""
+IIR_MIN_DEPTH = 4
+"""Internal iterative reduction: one ply less at a node with no transposition-table move."""
 
 PV_SCORE = 2_000_000
 CAPTURE_SCORE = 1_000_000
@@ -379,6 +382,9 @@ def _enter(
                 return True, score
             if bound == BOUND_UPPER and score <= ss.alpha[p]:
                 return True, score
+    if p > 0 and tt_move == 0 and depth >= IIR_MIN_DEPTH:
+        depth -= 1
+        ss.depth[p] = depth
     moves = ss.moves[p]
     stand = 0
     if depth <= 0 and not check:
