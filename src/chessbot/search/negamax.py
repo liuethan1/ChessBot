@@ -26,6 +26,10 @@ beta plus a margin that grows with remaining depth. Futility pruning skips later
 those nodes when even a generous margin on the static eval cannot raise alpha; checks are still
 searched.
 
+Late-move reductions search later quiet non-checks at a shallower depth with a null window, then
+re-search at full depth if that fails high. The re-search is another parent-frame stage. The root
+is not reduced, so a quiet mate at the horizon is still searched at full iteration depth.
+
 Every completed frame is stored in the transposition table, and non-PV frames (null window) return
 straight from a table entry that is deep enough and whose bound proves the result. The table move
 is searched first.
@@ -33,6 +37,7 @@ is searched first.
 
 from __future__ import annotations
 
+from math import log
 from typing import NamedTuple
 
 import numpy as np
@@ -84,7 +89,7 @@ FLAG_IN_CHECK = 2
 FLAG_NMP = 4
 """Set on a frame that still has to search a null move before its real moves."""
 
-CHILD_FULL, CHILD_PVS, CHILD_NMP = 0, 1, 2
+CHILD_FULL, CHILD_PVS, CHILD_NMP, CHILD_LMR = 0, 1, 2, 3
 """What ``SearchStack.zw[p]`` says about the child currently open under frame ``p``."""
 
 NMP_MIN_DEPTH = 3
@@ -96,6 +101,9 @@ FP_MAX_DEPTH = 8
 FP_MARGIN_BASE = 150
 FP_MARGIN_PLY = 80
 """Futility: skip a quiet when eval + 150 + 80*depth cannot raise alpha."""
+LMR_MIN_DEPTH = 3
+LMR_DIVISOR = 2.25
+"""LMR reduction is ``log(depth) * log(move_index+1) / 2.25``, plus one ply off the PV."""
 
 PV_SCORE = 2_000_000
 CAPTURE_SCORE = 1_000_000
@@ -127,7 +135,7 @@ class SearchStack(NamedTuple):
     best_move: Int32Array
     flags: Int32Array
     zw: Int32Array
-    """Kind of the child open under this frame: ``CHILD_FULL``, ``CHILD_PVS``, or ``CHILD_NMP``."""
+    """Kind of child open under this frame: full, PVS, null-move, or LMR."""
     pv: Int32Array
     """(MAX_SEARCH_PLY, MAX_SEARCH_PLY) triangular PV table; row ``p`` starts at column ``p``."""
     pv_len: Int32Array
@@ -430,15 +438,26 @@ def _store(pos: Position, ss: SearchStack, tt: TransTable, p: int, score: int) -
 
 @njit
 def _open_child(
-    pos: Position, t: Tables, ss: SearchStack, p: int, m: int, null_window: bool
+    pos: Position,
+    t: Tables,
+    ss: SearchStack,
+    p: int,
+    m: int,
+    null_window: bool,
+    reduction: int,
 ) -> int:
     """Play ``m`` from frame ``p`` and set up the child frame's window; returns its index."""
     make_move(pos, t, m)
     c = p + 1
-    ss.zw[p] = CHILD_PVS if null_window else CHILD_FULL
+    if reduction > 0:
+        ss.zw[p] = CHILD_LMR
+    elif null_window:
+        ss.zw[p] = CHILD_PVS
+    else:
+        ss.zw[p] = CHILD_FULL
     ss.alpha[c] = -ss.alpha[p] - 1 if null_window else -ss.beta[p]
     ss.beta[c] = -ss.alpha[p]
-    ss.depth[c] = ss.depth[p] - 1
+    ss.depth[c] = ss.depth[p] - 1 - reduction
     follow = ss.flags[p] & FOLLOW_PV and p < ss.sc[SC_PREV_PV_LEN] and m == ss.prev_pv[p]
     ss.flags[c] = FOLLOW_PV if follow else 0
     return c
@@ -521,21 +540,43 @@ def run(
             flag = (m >> 12) & 15
             quiet = (flag & (CAPTURE | PROMO)) == 0
             depth_p = int(ss.depth[p])
+            is_pv = ss.beta[p] - ss.alpha[p] > 1
+            in_chk = ss.flags[p] & FLAG_IN_CHECK
+            gives_check = False
+            if quiet and i > 0 and depth_p > 0 and not in_chk:
+                make_move(pos, t, m)
+                gives_check = in_check(pos, t)
+                unmake_move(pos, t)
             if (
                 quiet
                 and i > 0
                 and 0 < depth_p <= FP_MAX_DEPTH
-                and ss.beta[p] - ss.alpha[p] == 1
-                and not (ss.flags[p] & FLAG_IN_CHECK)
+                and not is_pv
+                and not in_chk
+                and not gives_check
                 and abs(ss.alpha[p]) < MATE_BOUND
                 and ss.static_eval[p] + FP_MARGIN_BASE + FP_MARGIN_PLY * depth_p <= ss.alpha[p]
             ):
-                make_move(pos, t, m)
-                gives_check = in_check(pos, t)
-                unmake_move(pos, t)
-                if not gives_check:
-                    continue
-            sp = _open_child(pos, t, ss, p, m, i > 0 and ss.beta[p] - ss.alpha[p] > 1)
+                continue
+            reduction = 0
+            if (
+                p > 0
+                and quiet
+                and i > 0
+                and depth_p >= LMR_MIN_DEPTH
+                and not in_chk
+                and not gives_check
+            ):
+                r = int(log(float(depth_p)) * log(float(i + 1)) / LMR_DIVISOR)
+                if not is_pv:
+                    r += 1
+                if r < 1:
+                    r = 1
+                if r > depth_p - 1:
+                    r = depth_p - 1
+                reduction = r
+            null_window = (i > 0 and is_pv) or reduction > 0
+            sp = _open_child(pos, t, ss, p, m, null_window, reduction)
             mode = ENTER
         else:
             if sp == 0:
@@ -558,9 +599,16 @@ def run(
                 else:
                     mode = NEXT
                 continue
+            if ss.zw[p] == CHILD_LMR and score > ss.alpha[p]:
+                m = ss.moves[p, ss.next_index[p] - 1]
+                i = int(ss.next_index[p] - 1)
+                is_pv = ss.beta[p] - ss.alpha[p] > 1
+                sp = _open_child(pos, t, ss, p, m, i > 0 and is_pv, 0)
+                mode = ENTER
+                continue
             mode = NEXT
             if ss.zw[p] == CHILD_PVS and ss.alpha[p] < score < ss.beta[p]:
-                sp = _open_child(pos, t, ss, p, ss.moves[p, ss.next_index[p] - 1], False)
+                sp = _open_child(pos, t, ss, p, ss.moves[p, ss.next_index[p] - 1], False, 0)
                 mode = ENTER
                 continue
             if score > ss.best[p]:
