@@ -29,6 +29,7 @@ searched.
 Late-move reductions search later quiet non-checks at a shallower depth with a null window, then
 re-search at full depth if that fails high. The re-search is another parent-frame stage. The root
 is not reduced, so a quiet mate at the horizon is still searched at full iteration depth.
+Late-move pruning drops later quiet non-checks at shallow non-PV nodes.
 
 Every completed frame is stored in the transposition table, and non-PV frames (null window) return
 straight from a table entry that is deep enough and whose bound proves the result. The table move
@@ -104,6 +105,9 @@ FP_MARGIN_PLY = 80
 LMR_MIN_DEPTH = 3
 LMR_DIVISOR = 2.25
 """LMR reduction is ``log(depth) * log(move_index+1) / 2.25``, plus one ply off the PV."""
+LMP_MAX_DEPTH = 6
+LMP_BASE = 3
+"""Late-move pruning drops quiets from index ``3 + depth*depth`` at shallow non-PV nodes."""
 
 PV_SCORE = 2_000_000
 CAPTURE_SCORE = 1_000_000
@@ -556,6 +560,16 @@ def run(
                 and not gives_check
                 and abs(ss.alpha[p]) < MATE_BOUND
                 and ss.static_eval[p] + FP_MARGIN_BASE + FP_MARGIN_PLY * depth_p <= ss.alpha[p]
+            ):
+                continue
+            if (
+                quiet
+                and i > 0
+                and 0 < depth_p <= LMP_MAX_DEPTH
+                and not is_pv
+                and not in_chk
+                and not gives_check
+                and i >= LMP_BASE + depth_p * depth_p
             ):
                 continue
             reduction = 0
