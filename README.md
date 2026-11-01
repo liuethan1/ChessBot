@@ -9,7 +9,10 @@ measurement tooling used to judge every later change. Phase 1 adds the engine co
 `chessbot.core`: numba-jitted bitboards with magic sliders, FEN I/O, Zobrist keys, make/unmake,
 and a legal move generator that passes both perft suites. Phase 2 makes it a playable UCI engine:
 `chessbot.search` adds iterative deepening alpha-beta with quiescence, a PeSTO tapered evaluation,
-MVV-LVA capture ordering, draw detection, and time management.
+MVV-LVA capture ordering, draw detection, and time management. Phase 3 adds a transposition table,
+SEE and history move ordering, principal variation search, aspiration windows, and check
+extensions. Phase 4 adds null-move pruning, reverse futility, futility, late-move reductions,
+late-move pruning, main-search SEE pruning, and internal iterative reductions.
 
 ## Playing
 
@@ -49,6 +52,23 @@ rule, and bare-minor endings score as draws.
 - **Aspiration windows**: from depth 4 each iteration starts at +/-20 cp around the previous score
   and widens by half on each fail low or fail high.
 - **Check extension**: a side in check at a full-width node is searched one ply deeper.
+- **Null-move pruning**: a non-PV side that is not in check, has a piece besides king and pawns,
+  and whose static eval is already at least beta may pass the move and search the reply at
+  `3 + depth/6` plies less. A fail high prunes the node. Consecutive null moves are not allowed,
+  and pawn endings are skipped. The null-move search is a parent-frame stage, like PVS re-search.
+- **Reverse futility**: a non-PV node of remaining depth 8 or less whose static eval already
+  beats beta by `80 * depth` centipawns returns that eval.
+- **Futility pruning**: later quiet non-checks at those nodes are skipped when
+  `eval + 150 + 80 * depth` cannot raise alpha.
+- **Late-move reductions**: later quiet non-checks are searched
+  `log(depth) * log(move_index+1) / 2.25` plies shallower (plus one ply off the PV) with a null
+  window, then re-searched at full depth if that fails high. The root is not reduced.
+- **Late-move pruning**: later quiet non-checks at non-PV nodes of remaining depth 6 or less are
+  dropped from index `3 + depth²`.
+- **Main-search SEE pruning**: later losing captures (more than `100 * depth`) and hanging quiets
+  (more than `20 * depth²`) are skipped at non-PV nodes. Quiescence already drops losing captures.
+- **Internal iterative reductions**: a non-root node of remaining depth 4 or more with no
+  transposition-table move is searched one ply shallower.
 
 Time management: with a clock, the target is `remaining / 30 + 0.75 * increment` (fewer moves if
 `movestogo` is smaller); no new iteration starts after 55% of the target, and the search is cut
