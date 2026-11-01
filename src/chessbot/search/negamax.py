@@ -22,7 +22,9 @@ and search the reply at a reduced depth. A fail high prunes the node. Consecutiv
 not allowed, and pawn endings are skipped so zugzwang is not mistaken for a cutoff.
 
 Reverse futility pruning returns the static eval at a non-PV node whose eval is already at least
-beta plus a margin that grows with remaining depth.
+beta plus a margin that grows with remaining depth. Futility pruning skips later quiet moves at
+those nodes when even a generous margin on the static eval cannot raise alpha; checks are still
+searched.
 
 Every completed frame is stored in the transposition table, and non-PV frames (null window) return
 straight from a table entry that is deep enough and whose bound proves the result. The table move
@@ -90,6 +92,10 @@ NMP_MIN_DEPTH = 3
 RFP_MAX_DEPTH = 8
 RFP_MARGIN = 80
 """Reverse futility: a non-PV node with eval - 80*depth already above beta is a cutoff."""
+FP_MAX_DEPTH = 8
+FP_MARGIN_BASE = 150
+FP_MARGIN_PLY = 80
+"""Futility: skip a quiet when eval + 150 + 80*depth cannot raise alpha."""
 
 PV_SCORE = 2_000_000
 CAPTURE_SCORE = 1_000_000
@@ -512,6 +518,23 @@ def run(
                 moves[j], moves[i] = moves[i], m
                 order[j], order[i] = order[i], order[j]
             ss.next_index[p] = i + 1
+            flag = (m >> 12) & 15
+            quiet = (flag & (CAPTURE | PROMO)) == 0
+            depth_p = int(ss.depth[p])
+            if (
+                quiet
+                and i > 0
+                and 0 < depth_p <= FP_MAX_DEPTH
+                and ss.beta[p] - ss.alpha[p] == 1
+                and not (ss.flags[p] & FLAG_IN_CHECK)
+                and abs(ss.alpha[p]) < MATE_BOUND
+                and ss.static_eval[p] + FP_MARGIN_BASE + FP_MARGIN_PLY * depth_p <= ss.alpha[p]
+            ):
+                make_move(pos, t, m)
+                gives_check = in_check(pos, t)
+                unmake_move(pos, t)
+                if not gives_check:
+                    continue
             sp = _open_child(pos, t, ss, p, m, i > 0 and ss.beta[p] - ss.alpha[p] > 1)
             mode = ENTER
         else:
