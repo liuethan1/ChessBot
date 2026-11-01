@@ -295,3 +295,17 @@ def test_check_extension_finds_a_mate_beyond_the_nominal_depth() -> None:
     move, score, _ = search("r3r2k/2R3pp/pp1q1p2/8/3P3R/7P/PP3PP1/3Q2K1 w - - 0 1", depth=3)
     assert move == "h4h7"
     assert score > MATE_BOUND
+
+
+def test_null_move_does_not_claim_mate_in_a_pawn_ending() -> None:
+    # King and pawn vs king: NMP is skipped (no non-pawn piece), so a modest-depth search
+    # must not invent a mate score from a null-move cutoff.
+    _, score, _ = search("8/8/8/8/8/4k3/4P3/4K3 w - - 0 1", depth=8)
+    assert abs(score) < MATE_BOUND
+    assert score > 0
+
+
+def test_null_move_still_finds_a_quiet_win() -> None:
+    move, score, _ = search("4k3/8/8/8/8/8/4Q3/4K3 w - - 0 1", depth=6)
+    assert move[0] == "e"
+    assert score > 800
