@@ -29,7 +29,8 @@ searched.
 Late-move reductions search later quiet non-checks at a shallower depth with a null window, then
 re-search at full depth if that fails high. The re-search is another parent-frame stage. The root
 is not reduced, so a quiet mate at the horizon is still searched at full iteration depth.
-Late-move pruning drops later quiet non-checks at shallow non-PV nodes.
+Late-move pruning drops later quiet non-checks at shallow non-PV nodes. Main-search SEE pruning
+skips later losing captures and hanging quiets; quiescence already dropped losing captures.
 
 Every completed frame is stored in the transposition table, and non-PV frames (null window) return
 straight from a table entry that is deep enough and whose bound proves the result. The table move
@@ -108,6 +109,10 @@ LMR_DIVISOR = 2.25
 LMP_MAX_DEPTH = 6
 LMP_BASE = 3
 """Late-move pruning drops quiets from index ``3 + depth*depth`` at shallow non-PV nodes."""
+SEE_PRUNE_MAX_DEPTH = 8
+SEE_CAPTURE_MARGIN = 100
+SEE_QUIET_MARGIN = 20
+"""Main-search SEE: skip captures losing more than 100*depth and quiets hanging more than 20*d^2."""
 
 PV_SCORE = 2_000_000
 CAPTURE_SCORE = 1_000_000
@@ -547,7 +552,7 @@ def run(
             is_pv = ss.beta[p] - ss.alpha[p] > 1
             in_chk = ss.flags[p] & FLAG_IN_CHECK
             gives_check = False
-            if quiet and i > 0 and depth_p > 0 and not in_chk:
+            if i > 0 and depth_p > 0 and not in_chk:
                 make_move(pos, t, m)
                 gives_check = in_check(pos, t)
                 unmake_move(pos, t)
@@ -572,6 +577,19 @@ def run(
                 and i >= LMP_BASE + depth_p * depth_p
             ):
                 continue
+            if (
+                i > 0
+                and 0 < depth_p <= SEE_PRUNE_MAX_DEPTH
+                and not is_pv
+                and not in_chk
+                and not gives_check
+            ):
+                see_gain = see(pos, t, m, ss.see_buf)
+                if flag & CAPTURE:
+                    if see_gain < -SEE_CAPTURE_MARGIN * depth_p:
+                        continue
+                elif quiet and see_gain < -SEE_QUIET_MARGIN * depth_p * depth_p:
+                    continue
             reduction = 0
             if (
                 p > 0
