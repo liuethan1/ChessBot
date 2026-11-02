@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26",
     "numba>=0.59",
+    "chess>=1.10",
 ]
 
 [project.optional-dependencies]
@@ -35,6 +36,7 @@ chessbot-acpl = "chessbot.tools.acpl:main"
 chessbot-fetch = "chessbot.tools.fetch:main"
 chessbot-warmup = "chessbot.tools.warmup:main"
 chessbot-texel = "chessbot.tools.texel:main"
+chessbot-book = "chessbot.tools.book:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chessbot"]

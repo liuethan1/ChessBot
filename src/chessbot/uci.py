@@ -14,10 +14,12 @@ import time
 from typing import TextIO
 
 from chessbot import __version__
+from chessbot.book import DEFAULT_BOOK_DEPTH, OpeningBook, default_book_path, game_ply
 from chessbot.core.board import Board
 from chessbot.core.position import START_FEN, move_to_uci
 from chessbot.search import Limits, Searcher, SearchInfo, SearchResult, warmup
 from chessbot.search.tt import DEFAULT_HASH_MB, MAX_HASH_MB
+from chessbot.tablebase import DEFAULT_PROBE_LIMIT, Tablebases, default_syzygy_path
 
 ENGINE_NAME = f"ChessBot {__version__}"
 AUTHOR = "Ethan Liu"
@@ -68,6 +70,14 @@ class UciEngine:
         self.hash_mb = DEFAULT_HASH_MB
         self.limit_strength = False
         self.elo = MAX_ELO
+        self.own_book = True
+        self.book_best = True
+        self.book_depth = DEFAULT_BOOK_DEPTH
+        self.book_file = str(default_book_path())
+        self.book = OpeningBook()
+        self.syzygy_path = ""
+        self.syzygy_probe_limit = DEFAULT_PROBE_LIMIT
+        self.tablebases = Tablebases()
 
     def send(self, line: str) -> None:
         with self._out_lock:
@@ -83,7 +93,15 @@ class UciEngine:
         warmup()
         self.searcher = Searcher(hash_mb=self.hash_mb)
         self.board = Board()
+        self.reload_book()
+        self.reload_tablebases()
         self._warm.set()
+
+    def reload_book(self) -> None:
+        self.book.set_path(self.book_file if self.own_book else None)
+
+    def reload_tablebases(self) -> None:
+        self.tablebases.set_path(self.syzygy_path or default_syzygy_path())
 
     def wait_ready(self) -> None:
         self.start_warmup()
@@ -116,6 +134,14 @@ class UciEngine:
             self.send("option name UCI_LimitStrength type check default false")
             self.send(
                 f"option name UCI_Elo type spin default {MAX_ELO} min {MIN_ELO} max {MAX_ELO}"
+            )
+            self.send("option name OwnBook type check default true")
+            self.send(f"option name BookFile type string default {self.book_file}")
+            self.send("option name BookBest type check default true")
+            self.send(f"option name BookDepth type spin default {DEFAULT_BOOK_DEPTH} min 0 max 100")
+            self.send("option name SyzygyPath type string default")
+            self.send(
+                f"option name SyzygyProbeLimit type spin default {DEFAULT_PROBE_LIMIT} min 0 max 7"
             )
             self.send("uciok")
         elif cmd == "isready":
@@ -176,6 +202,24 @@ class UciEngine:
             self.limit_strength = value.lower() == "true"
         elif name == "uci_elo":
             self.elo = min(MAX_ELO, max(MIN_ELO, int(value)))
+        elif name == "ownbook":
+            self.own_book = value.lower() == "true"
+            if self._warm.is_set():
+                self.reload_book()
+        elif name == "bookfile":
+            self.book_file = value
+            if self._warm.is_set():
+                self.reload_book()
+        elif name == "bookbest":
+            self.book_best = value.lower() == "true"
+        elif name == "bookdepth":
+            self.book_depth = max(0, int(value))
+        elif name == "syzygypath":
+            self.syzygy_path = value
+            if self._warm.is_set():
+                self.reload_tablebases()
+        elif name == "syzygyprobelimit":
+            self.syzygy_probe_limit = max(0, min(7, int(value)))
 
     def set_position(self, args: list[str]) -> None:
         if not args:
@@ -217,6 +261,26 @@ class UciEngine:
         self.send(f"Nodes searched  : {nodes}")
         self.send(f"Nodes/second    : {nps}")
 
+    def _timed(self, limits: Limits) -> bool:
+        return limits.movetime is not None or limits.wtime is not None or limits.btime is not None
+
+    def probe_root(self, board: Board, limits: Limits) -> SearchResult | None:
+        """Polyglot then Syzygy DTZ at the root. Never called from jitted code."""
+        if self.own_book and self._timed(limits) and game_ply(board) < self.book_depth:
+            move = self.book.probe(board, best=self.book_best)
+            if move:
+                self.send(format_info(SearchInfo(1, 1, 0, 0, 0.0, [move])))
+                self.send("info string book")
+                return SearchResult(move, 0, 1, 0, 0.0, [move])
+        if not limits.infinite and self.tablebases.loaded:
+            hit = self.tablebases.probe_dtz_move(board, probe_limit=self.syzygy_probe_limit)
+            if hit is not None:
+                move, score = hit
+                self.send(format_info(SearchInfo(1, 1, score, 0, 0.0, [move])))
+                self.send("info string syzygy")
+                return SearchResult(move, score, 1, 0, 0.0, [move])
+        return None
+
     def go(self, limits: Limits, received: float | None = None) -> None:
         assert self.board is not None
         assert self.searcher is not None
@@ -225,6 +289,12 @@ class UciEngine:
         board, searcher = self.board, self.searcher
 
         def think() -> None:
+            probed = None if self._stop.is_set() else self.probe_root(board, limits)
+            if probed is not None:
+                if limits.infinite:
+                    self._stop.wait()
+                self._send_bestmove(probed)
+                return
             result = searcher.search(board, limits, self._on_info, self._stop, received)
             if limits.infinite:
                 self._stop.wait()
