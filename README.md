@@ -13,7 +13,9 @@ and a legal move generator that passes both perft suites. Phase 2 makes it a pla
 MVV-LVA capture ordering, draw detection, and time management. Phase 3 adds a transposition table,
 SEE and history move ordering, principal variation search, aspiration windows, and check
 extensions. Phase 4 adds null-move pruning, reverse futility, futility, late-move reductions,
-late-move pruning, main-search SEE pruning, and internal iterative reductions.
+late-move pruning, main-search SEE pruning, and internal iterative reductions. Phase 5 Texel-tunes
+the extra evaluation terms. This tree adds a Polyglot opening book and Syzygy 3–5 piece tablebases,
+both probed from Python at the root (never from a jitted frame).
 
 ## Playing
 
@@ -25,9 +27,16 @@ Point a GUI, fastchess, cutechess-cli, or lichess-bot at that command. Supported
 `wtime`/`btime`/`winc`/`binc`/`movestogo`/`movetime`/`depth`/`nodes`/`infinite`, `stop`,
 `go perft N`, `bench [depth]` (searches the bench positions from an empty table and prints the
 node count and speed; default depth 6), and `d` (prints the FEN). Options: `Hash` (transposition
-table size in MB, default 16), `Move Overhead` (ms kept in reserve per move, default 50), plus
+table size in MB, default 16), `Move Overhead` (ms kept in reserve per move, default 50),
+`OwnBook` / `BookFile` / `BookBest` / `BookDepth` (Polyglot book at the root on timed games),
+`SyzygyPath` / `SyzygyProbeLimit` (DTZ at the root when there are at most 5 pieces), plus
 `UCI_LimitStrength` and `UCI_Elo`, which are accepted but have no effect yet. Arguments run one
 command and exit, as in `python -m chessbot bench 6`.
+
+The packaged book (`chessbot/data/book.bin`) is built from Lichess Elite games (2500+ vs 2300+,
+no bullet). 3–5 piece Syzygy files stay out of the repo (~1 GB); fetch them with
+`chessbot-fetch syzygy` and the engine will use `external/syzygy` automatically, or set
+`SyzygyPath`. Book and DTZ probes use python-chess in the UCI loop only.
 
 ## Search
 
@@ -77,7 +86,8 @@ isolated pawns, connected and passed pawns, mobility, rook files, outposts, pawn
 king-safety terms, and a tempo bonus) are counted in numba from bitboards and attack tables —
 nothing in a jitted frame calls python-chess. Their weights are Texel-tuned with numpy
 (`chessbot-texel`) on quiet positions labelled with game results. `UCI_LimitStrength` / `UCI_Elo`
-are still no-ops; opening books and Syzygy tablebases are still later phases.
+are still no-ops. The opening book and Syzygy DTZ are consulted at the root before search; there
+is no in-search WDL probe.
 
 Time management: with a clock, the target is `remaining / 30 + 0.75 * increment` (fewer moves if
 `movestogo` is smaller); no new iteration starts after 55% of the target, and the search is cut
@@ -111,7 +121,10 @@ board.legal_uci(), board.fen(), board.key, board.perft(5)
 ```bash
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-chessbot-fetch all          # opening books, WAC/STS suites, and fastchess into external/
+chessbot-fetch all          # match books, WAC/STS suites, and fastchess into external/
+chessbot-fetch syzygy       # 3–5 piece Syzygy WDL/DTZ (~1 GB) into external/syzygy
+chessbot-fetch elite        # Lichess Elite PGN zips used to rebuild the Polyglot book
+chessbot-book build external/elite/*.zip -o src/chessbot/data/book.bin --max-ply 32 --min-games 8
 ```
 
 Stockfish is needed for ACPL analysis, reference gauntlets, and some tests. Install it from your
@@ -128,8 +141,9 @@ package manager (`apt install stockfish`) or set `STOCKFISH_PATH`.
 | `chessbot-sprt` | Computes the SPRT log-likelihood ratio and an Elo estimate from W/D/L or pentanomial counts |
 | `chessbot-acpl` | Average centipawn loss, blunders, and mistakes for each side of a PGN, using Stockfish |
 | `chessbot-warmup` | Times how long a fresh process takes to import and warm up the jitted core and search; `--check SECONDS` fails CI when the numba cache is not doing its job |
-| `chessbot-fetch` | Downloads pinned, checksummed books, suites, and the fastchess binary into `external/` |
+| `chessbot-fetch` | Downloads pinned, checksummed match books, suites, fastchess, optional Lichess Elite PGNs, and 3–5 piece Syzygy tables into `external/` |
 | `chessbot-texel` | Extract quiet labelled positions from PGNs and Texel-tune the extra evaluation weights |
+| `chessbot-book` | Build a Polyglot `.bin` from PGN or zipped PGN (used to ship `chessbot/data/book.bin`) |
 
 Examples:
 
@@ -151,3 +165,6 @@ ruff check . && ruff format --check . && mypy && pytest
 
 Tests that need Stockfish or fastchess are skipped when the binary is not found. Tests marked
 `slow` (such as reproducing the legacy bot's ACPL baseline) run in a separate CI job.
+
+The project is licensed under MIT. Lichess Elite games are CC0; Syzygy tables are generated
+endgame data fetched into `external/` and are not redistributed in this repository.

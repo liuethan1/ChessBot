@@ -1,0 +1,7 @@
+Polyglot opening book for ChessBot.
+
+Source: Lichess Elite Database months 2025-07, 2025-08, 2025-09
+(https://database.nikonoel.fr/; 2500+ vs 2300+ standard games, no bullet; CC0).
+Rebuild: chessbot-fetch elite && chessbot-book build external/elite/*.zip -o src/chessbot/data/book.bin --max-ply 32 --min-games 8
+
+Built from 863445 games; 182226 entries / 127484 positions after the min-games filter.
